@@ -237,6 +237,15 @@ Part B（仅当 Part A 为 0 时执行）：
 
 弹窗 UI 使用内联 SVG 图标系统，定义在 `popup/popup.js` 的 `ICONS` 常量中。所有图标均可通过修改对应 SVG 字符串来更换，无需依赖外部资源。
 
+## Star History
+
+<a href="https://www.star-history.com/#Lolitide/VirusDetector&type=date&legend=top-left">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=Lolitide/VirusDetector&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=Lolitide/VirusDetector&type=date&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=Lolitide/VirusDetector&type=date&legend=top-left" />
+ </picture>
+</a>
 ---
 
 ## License
