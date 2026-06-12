@@ -541,14 +541,38 @@ chrome.webNavigation.onCompleted.addListener(async (details) => {
 // 下载创建事件
 chrome.downloads.onCreated.addListener(async (downloadItem) => {
   try {
-    if (!ScoringEngine.isArchiveFile(downloadItem.filename)) return;
+    // 三层检测：文件名 + URL路径 + MIME类型
+    if (!ScoringEngine.isArchiveFile(downloadItem.filename, downloadItem.url, downloadItem.mime)) return;
 
     console.log('[ServiceWorker] 检测到压缩包下载:', downloadItem.filename);
 
-    // 尝试找到源标签页
-    const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (tabs.length === 0) return;
-    const tabId = tabs[0].id;
+    // 尝试找到源标签页：优先通过 referrer 匹配所有已打开的标签页
+    let tabId = null;
+    if (downloadItem.referrer) {
+      try {
+        const referrerUrl = new URL(downloadItem.referrer);
+        const allTabs = await chrome.tabs.query({});
+        const sourceTab = allTabs.find(tab => {
+          try {
+            return new URL(tab.url || '').hostname === referrerUrl.hostname;
+          } catch (e) { return false; }
+        });
+        if (sourceTab) {
+          tabId = sourceTab.id;
+          console.log('[ServiceWorker] 通过referrer定位到源标签页:', sourceTab.url);
+        }
+      } catch (e) { /* referrer解析失败，回退到活跃标签页 */ }
+    }
+
+    // 回退：通过referrer未找到时，查询活跃标签页
+    if (!tabId) {
+      const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (tabs.length === 0) {
+        console.log('[ServiceWorker] 无法找到下载源标签页，跳过下载检测');
+        return;
+      }
+      tabId = tabs[0].id;
+    }
 
     const tabState = await loadTabState(tabId);
 
@@ -565,9 +589,19 @@ chrome.downloads.onCreated.addListener(async (downloadItem) => {
       downloadId: downloadItem.id
     };
 
-    // 重新计算规则二
-    const existingScore = Object.values(tabState.ruleResults)
+    // 重新计算规则二（先使用现有tabState评分）
+    let existingScore = Object.values(tabState.ruleResults)
       .reduce((sum, r) => sum + (r.score || 0), 0);
+
+    // 竞态条件回退：如果 tabState 尚未分析完成（所有规则评分为0），从缓存补充
+    if (!tabState.isAnalyzed || existingScore === 0) {
+      const cached = await CacheManager.get(tabState.domain);
+      if (cached && cached.ruleResults) {
+        existingScore = Object.values(cached.ruleResults)
+          .reduce((sum, r) => sum + (r.score || 0), 0);
+        console.log('[ServiceWorker] 缓存回退：从CacheManager补充评分:', tabState.domain, existingScore);
+      }
+    }
     const rule2Result = ScoringEngine._evaluateRule2(tabState.downloadState, existingScore);
 
     tabState.ruleResults.rule2 = rule2Result;

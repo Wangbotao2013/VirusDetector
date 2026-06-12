@@ -343,12 +343,63 @@ export class ScoringEngine {
 
   // ==================== 工具方法 ====================
 
-  static isArchiveFile(filename) {
-    const lower = filename.toLowerCase();
-    return ARCHIVE_EXTENSIONS.some(ext => {
-      if (ext.startsWith('.')) return lower.endsWith(ext);
-      // 处理如 .tar.gz 的复合扩展名
-      return lower.endsWith(ext);
-    });
+  /**
+   * 检测文件是否为压缩包格式
+   * 三层检测：文件名扩展名 → 下载URL路径 → MIME类型
+   * @param {string} filename - 文件名（可能为空）
+   * @param {string} [url=''] - 下载URL（用于回退检测）
+   * @param {string} [mime=''] - MIME类型（用于回退检测）
+   * @returns {boolean}
+   */
+  static isArchiveFile(filename, url = '', mime = '') {
+    // 第一层：文件名扩展名检测（增加空值安全检查）
+    if (filename) {
+      const lower = filename.toLowerCase();
+      const matchByFilename = ARCHIVE_EXTENSIONS.some(ext => {
+        if (ext.startsWith('.')) return lower.endsWith(ext);
+        // 处理如 .tar.gz 的复合扩展名
+        return lower.endsWith(ext);
+      });
+      if (matchByFilename) return true;
+    }
+
+    // 第二层：下载URL路径检测（去除查询参数后检查扩展名）
+    if (url) {
+      try {
+        const urlObj = new URL(url);
+        const pathname = urlObj.pathname.toLowerCase();
+        const matchByUrl = ARCHIVE_EXTENSIONS.some(ext => {
+          if (ext.startsWith('.')) return pathname.endsWith(ext);
+          return pathname.endsWith(ext);
+        });
+        if (matchByUrl) return true;
+      } catch (e) { /* URL解析失败，跳过此层检测 */ }
+    }
+
+    // 第三层：MIME类型检测（17种常见压缩包MIME类型）
+    if (mime) {
+      const ARCHIVE_MIME_TYPES = [
+        'application/zip',
+        'application/x-rar-compressed',
+        'application/x-7z-compressed',
+        'application/x-tar',
+        'application/gzip',
+        'application/x-bzip2',
+        'application/x-xz',
+        'application/x-compress',
+        'application/x-iso9660-image',
+        'application/vnd.ms-cab-compressed',
+        'application/x-arj',
+        'application/x-lzh',
+        'application/zstd',
+        'application/x-compressed-tar',
+        'application/x-gzip',
+        'application/x-bzip',
+        'application/x-lzma'
+      ];
+      if (ARCHIVE_MIME_TYPES.includes(mime.toLowerCase())) return true;
+    }
+
+    return false;
   }
 }

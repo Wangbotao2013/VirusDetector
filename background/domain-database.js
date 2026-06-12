@@ -849,6 +849,14 @@ const DOMAIN_DATABASE = [
     keywords: ['AnyDesk', 'anydesk', '远程桌面'],
     isChineseBrand: false
   },
+  {
+    name: 'Github',
+    officialDomains: ['github.com'],
+    correctUrl: 'https://www.github.com',
+    category: SOFTWARE_CATEGORIES.DEVELOPER,
+    keywords: ['Github'],
+    isChineseBrand: false
+  },
 
   // ========== 游戏平台 ==========
   {
@@ -858,6 +866,14 @@ const DOMAIN_DATABASE = [
     category: SOFTWARE_CATEGORIES.GAME,
     keywords: ['WeGame', 'wegame'],
     isChineseBrand: true
+  },
+  {
+    name: 'Minecraft',
+    officialDomains: ['minecraft.net', 'minecraft.com'],
+    correctUrl: 'https://www.minecraft.net',
+    category: SOFTWARE_CATEGORIES.GAME,
+    keywords: ['Minecraft', 'minecraft', '我的世界'],
+    isChineseBrand: false
   },
   {
     name: '蒸汽平台',
@@ -1182,7 +1198,7 @@ export class DomainDatabase {
     for (const officialDomain of sortedOfficialDomains) {
       const dist = this._levenshtein(normalized, officialDomain);
       if (dist >= 1 && dist <= 2 && normalized.length >= officialDomain.length - 2
-          && normalized.length >= 6) {
+        && normalized.length >= 6) {
         const entry = domainToEntry.get(officialDomain);
         return {
           entry,
