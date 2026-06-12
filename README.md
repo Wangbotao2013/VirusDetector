@@ -1,151 +1,244 @@
-# 🛡️ 银狐木马检测 — Virus Detector
+# Virus Detector - 银狐木马检测
 
-> 一个 Chrome/Edge 浏览器扩展，实时检测银狐木马（Silver Fox Trojan）钓鱼/仿冒网站。
+> Chrome/Edge 浏览器扩展，实时检测银狐木马（Silver Fox Trojan）钓鱼与仿冒网站。
 
 [![Manifest](https://img.shields.io/badge/Manifest-V3-blue)](https://developer.chrome.com/docs/extensions/mv3/)
-[![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-1.2.0-orange)](https://github.com)
+[![Version](https://img.shields.io/badge/Version-1.2.1-orange)](https://github.com)
 
 ---
 
-## ✨ 核心功能
+## 功能简介
 
-通过 **5 条规则** 对访问的网站实时评分，分数 ≥ 100 时触发红色警告。
+通过 5 条评分规则对访问的网站进行实时安全评估。当总分达到 100 分阈值时，自动触发红色警告、桌面通知、下载拦截和警告弹窗。
 
 | 规则 | 最高加分 | 检测内容 |
 | ---- | -------- | -------- |
-| 🏷️ 域名仿冒 | **60 分** | 子串包含 / 段级关键词 / 可疑 TLD / 编辑距离识别仿冒域名 |
-| 📦 压缩包下载 | **40 分** | 从可疑站点下载 `.zip` `.rar` `.7z` 等自动取消 + 加分 |
-| 📋 ICP 备案缺失 | **50 分** | `.cn` 及中国品牌网站缺少备案号视为钓鱼 |
-| 🔗 链接分析 | **60 分** | 同页链接过多 / 死链 / 外链绑定下载按钮 / 指向压缩包 |
-| 🤖 AI 生成特征 | **30 分** | HTML 行数少 + 无框架痕迹 + 文本内容丰富 = AI 钓鱼页面 |
+| 域名仿冒 | **60** | 子串包含、段级关键词、可疑 TLD、编辑距离四层匹配识别仿冒域名 |
+| 压缩包下载 | **40** | 从可疑站点下载压缩包（`.zip` `.rar` `.7z` 等）自动取消并加分 |
+| ICP 备案缺失 | **50** | 对所有网站检测 ICP 备案号，缺失视为可疑信号 |
+| 链接分析 | **70** | 同页链接过多、死链、重复链接、外链绑定下载按钮、指向文件 |
+| AI 生成特征 | **30** | HTML 代码简陋但文本内容丰富 = 疑似 AI 生成的钓鱼页面 |
 
-**总分 ≥ 100** → 🔴 图标变红 → 弹窗警告 → 注入下载拦截脚本 → 取消进行中的下载。
+**附加功能**：
 
----
-
-## 🎯 防御策略
-
-### 域名仿冒检测（4 层匹配）
-
-```text
-策略1: 子串包含   → pc-huorong.com.cn 包含 huorong.com → 命中
-策略2: 段级关键词 → deepseek-go.com 拆分 → "deepseek" 命中关键词
-策略3: 可疑TLD    → huorong-download.xyz → .xyz 可疑 + 关键词
-策略4: 编辑距离   → qq.om ≈ qq.com → 距离=1
-```
-
-### 下载拦截
-
-一旦判定为危险网站，自动注入脚本到页面：
-
-- 禁用所有带"下载 / Download"文本的按钮和链接
-- 拦截指向 `.exe` `.zip` `.rar` `.msi` 等文件的点击
-- 移除 `<a download>` 属性
-- 页面顶部注入红色禁令横幅
-- `MutationObserver` 持续监控动态加载的按钮
-
-### 域名数据库
-
-覆盖 **121 个** 中国常用软件/网站，19 个类别：
-
-安全软件 · 浏览器 · 即时通讯 · 输入法 · 办公 · 视频 · 音乐 ·
-云存储 · AI Chat · 下载工具 · 压缩工具 · 电商 · 地图出行 · 支付 ·
-开发者工具 · 系统工具 · 游戏平台 · 游戏加速器 · 新闻资讯
+- **白名单** — 信任的网站可加入白名单，跳过所有检测
+- **下载拦截** — 危险网站自动注入拦截脚本，禁用下载按钮和危险链接
+- **警告弹窗** — 独立窗口展示风险详情，支持一键跳转官方网站并关闭危险页面
 
 ---
 
-## 🚀 快速开始
+## 安装方式
 
-### Chrome 安装
+### Chrome
 
-1. 下载本项目或 `git clone`
+1. 下载本项目源码或 `git clone`
 2. 打开 `chrome://extensions/`
-3. 开启 **开发者模式**（右上角开关）
-4. 点击 **加载已解压的扩展程序**
-5. 选择项目根目录
+3. 开启右上角「开发者模式」
+4. 点击「加载已解压的扩展程序」
+5. 选择项目根目录 `ViriusDetector/`
 
-### Edge 安装
+### Edge
 
-1. 打开 `edge://extensions/`
-2. 开启 **开发人员模式**
-3. 点击 **加载解压缩的扩展**
-4. 选择项目根目录
+1. 下载本项目源码或 `git clone`
+2. 打开 `edge://extensions/`
+3. 开启「开发人员模式」
+4. 点击「加载解压缩的扩展」
+5. 选择项目根目录 `ViriusDetector/`
 
 ---
 
-## 📂 项目结构
+## 项目结构
 
 ```text
 ViriusDetector/
-├── manifest.json                   # MV3 扩展清单
-├── icons/                          # 盾牌样式图标（绿/红）
+├── manifest.json                      # Manifest V3 扩展清单
+├── README.md
+├── icons/                             # 盾牌图标（16/32/48/128 px）
 ├── background/
-│   ├── service-worker.js           # 主协调器：导航/下载/消息/弹窗调度
-│   ├── scoring-engine.js           # 5 规则评分引擎
-│   ├── domain-database.js          # 121 条目域名数据库 + 仿冒检测
-│   ├── cache-manager.js            # chrome.storage 缓存（24h TTL）
-│   ├── similarity.js               # SimHash 文本相似度
-│   └── icp-utils.js                # ICP 备案号正则（34 省份简称）
+│   ├── service-worker.js              # 主协调器 —— 导航监听、下载拦截、消息路由、弹窗调度
+│   ├── scoring-engine.js              # 5 规则评分引擎 —— 综合评估与风险定级
+│   ├── domain-database.js             # 121 品牌域名数据库 + 仿冒检测（4 层匹配）
+│   ├── cache-manager.js               # chrome.storage.local 缓存管理（24h TTL）
+│   ├── similarity.js                  # SimHash 64 位文本相似度 + 海明距离
+│   └── icp-utils.js                   # ICP 备案号正则匹配（覆盖 34 个省级行政区简称）
 ├── content/
-│   └── content-script.js           # 页面分析：链接采集 · ICP 扫描 · 页面度量
+│   └── content-script.js              # 内容脚本 —— 链接采集、ICP 扫描、页面度量采集
 ├── popup/
-│   ├── popup.html / .css / .js     # 工具栏弹窗：评分详情 + 安全建议
+│   ├── popup.html                     # 工具栏弹窗 UI
+│   ├── popup.css                      # 弹窗样式（深色主题、SVG 图标系统）
+│   └── popup.js                       # 弹窗控制逻辑 —— 状态渲染、白名单操作
 ├── warning/
-│   ├── warning.html / .css / .js   # 独立警告窗口：风险详情 + 官网链接
+│   ├── warning.html                   # 独立警告窗口 UI
+│   ├── warning.css                    # 警告窗口样式
+│   └── warning.js                     # 警告窗口控制 —— 关闭危险页面、跳转安全页面
 └── utils/
-    ├── constants.js                # 评分常量 · 可疑 TLD · 下载关键词
-    ├── url-utils.js                # 域名解析 · 嵌套 TLD 检测
-    └── messaging.js                # 消息通信封装
+    ├── constants.js                   # 评分常量、可疑 TLD 模式、下载关键词、阈值配置
+    ├── url-utils.js                   # 域名解析、主域提取、嵌套 TLD 检测
+    └── messaging.js                   # chrome.runtime 消息通信封装
 ```
+
+### 技术特点
+
+- **零依赖**：纯原生 JavaScript（ES Modules），无需 Node.js 构建
+- **Manifest V3**：使用 Service Worker 事件驱动架构
+- **通信模型**：Background (Service Worker) ↔ Content Script ↔ Popup 三方消息传递
+- **算法**：SimHash 64 位 + Levenshtein 编辑距离用于文本相似度与域名仿冒检测
 
 ---
 
-## ⚙️ 评分体系
+## 实现方式
+
+### 防御策略
+
+#### 1. 域名仿冒检测（规则一 | 60 分）
+
+采用 4 层递进式匹配，任一层命中即判定为仿冒：
 
 ```text
-规则一  域名仿冒        +60 ——→ 总分≥100?
-规则二  压缩包下载      +40 ——→   │
-规则三  ICP 备案缺失    +50 ——→   ├── YES → 🔴 红色图标 + 弹窗 + 拦截注入
-规则四  链接分析        +60 ——→   │
-规则五  AI 生成特征    +30 ——→   └── NO  → 🟢 绿色图标
-                              (分数<100 且无 pageMetrics → 2秒后重试规则五)
+策略1 子串包含    → pc-huorong.com.cn 包含 huorong.com → 命中
+策略2 段级关键词  → deepseek-go.com 拆分 → "deepseek" 命中品牌关键词
+策略3 可疑TLD     → huorong-download.xyz → .xyz 为可疑 TLD + 含品牌关键词
+策略4 编辑距离    → qq.om 与 qq.com 的 Levenshtein 距离 = 1 → 命中
 ```
 
-### 缓存策略
+域名数据库覆盖 **121 个**品牌，包含 19 个类别：安全软件、浏览器、即时通讯、输入法、办公、视频、音乐、云存储、AI Chat、下载工具、压缩工具、电商、地图出行、支付、开发者工具、系统工具、游戏平台、游戏加速器、新闻资讯。
 
-检测结果缓存 24 小时，恶意 / 安全均缓存。Content Script 发回新数据时自动绕过缓存更新。
+#### 2. 下载拦截（规则二 | 最高 40 分）
 
-### 弹窗去重
+通过 `chrome.downloads.onCreated` 监听下载事件：
 
-同一标签页 5 秒冷却期，同域名不重复弹警告窗口。
+- 检测到压缩包文件（含 33 种扩展名）→ 规则二触发
+- 若域名已有 >= 30 分嫌疑 → **+40 分**并取消下载
+- 弱信号 → **+10 分**（仅记录，不取消）
+
+高危时自动注入拦截脚本到页面：
+
+- 禁用所有含"下载 / Download"文本的按钮和链接
+- 拦截指向 `.exe` `.zip` `.rar` `.msi` `.apk` 等危险文件的点击
+- 移除 `<a download>` 属性
+- 页面顶部注入红色警告横幅
+- 使用 `MutationObserver` 持续监控动态加载的按钮（30 秒窗口）
+
+#### 3. ICP 备案号检测（规则三 | 50 分）
+
+对所有网站进行 ICP 备案号检测，使用正则匹配覆盖中国全部 34 个省级行政区简称：
+
+- 完整的 ICP 备案号格式：`{省份}ICP{备|证}{6-8位数字}号`
+- 同时识别公安备案号：`{省份}公网安备{10+位数字}号`
+- Content Script 通过 6 层扫描获取页面中所有可能包含备案号的文本：footer 元素、ICP/beian 命名元素、底部 30% 区域、所有 `<a>` 链接、position:fixed 底部固定栏、TreeWalker 全文本节点遍历（上限 50000 节点）
+
+#### 4. 链接分析（规则四 | 最高 70 分）
+
+Part A（先执行，可叠加）：
+
+| 子规则 | 触发条件 | 加分 |
+| ------ | -------- | ---- |
+| A-1 同页链接 | >= 3 个链接指向当前页（完整 URL 完全一致） | +20 |
+| A-2 死链 | >= 1 个指向不存在子页面的链接（HEAD 请求验证） | +20 |
+| A-3 重复链接 | >= 4 个不同元素指向同一个链接 | +20 |
+| A-3 附加 | 该重复链接为下载链接（含 download/down 等关键词） | +10 |
+
+Part B（仅当 Part A 为 0 时执行）：
+
+| 子规则 | 触发条件 | 加分 |
+| ------ | -------- | ---- |
+| B-a 下载按钮 | 外链绑定在下载按钮上 | +10 |
+| B-b 文件链接 | 外链指向可执行文件/压缩包 | +10 |
+| B-b 附加 | 文件是压缩包格式 | +10 |
+
+#### 5. AI 生成页面特征（规则五 | 30 分）
+
+检测 AI 批量生成钓鱼页面的典型代码特征，3 个条件全部满足时触发：
+
+1. HTML 行数 < 300 —— 代码结构过于简陋
+2. 外部脚本数 < 5 —— 没有加载成熟的第三方库
+3. 无主流框架痕迹 —— React/Vue/Angular/jQuery 等均未检测到
+
+同时要求页面文本 > 500 字符（排除真正的空白/占位页面）。
+
+### 评分体系
+
+```text
+规则一  域名仿冒        +60 ──→
+规则二  压缩包下载      +40 ──→
+规则三  ICP 备案缺失    +50 ──→ 总分 >= 100 ?
+规则四  链接分析        +70 ──→   ├── YES → 红色徽章 + 桌面通知 + 警告弹窗 + 下载拦截注入
+规则五  AI 生成特征    +30 ──→   └── NO  → 绿色徽章显示分数
+```
+
+- 总分 < 100 且尚未有 pageMetrics → Content Script 二次扫描后重新评估
+
+### 插件功能
+
+#### 白名单系统
+
+用户可将信任的网站加入白名单：
+
+- 工具栏弹窗中点击「加入白名单」→ 域名被持久化到 `chrome.storage.local`
+- 白名单中的网站**完全跳过所有 5 条规则检测**
+- 工具栏图标右下角显示蓝色对勾徽章
+- 弹窗显示绿色对勾 + 提示文字
+- 支持一键移出白名单并立即重新触发检测
+
+#### 缓存策略
+
+- 检测结果缓存于 `chrome.storage.local`，TTL = 24 小时
+- Content Script 发回新数据时自动绕过缓存更新
+- 清除白名单时同步清除对应域名的缓存
+
+#### 弹窗去重
+
+- 同一标签页 5 秒冷却期，避免重复弹窗
+- 同域名不重复弹出警告窗口
+
+#### 消息通信
+
+12 种消息类型覆盖 Background ↔ Content Script ↔ Popup 三方通信：
+
+| 消息类型 | 方向 | 用途 |
+| -------- | ---- | ---- |
+| `PAGE_ANALYSIS_RESULT` | Content → Background | 页面分析数据上报 |
+| `REQUEST_PAGE_TEXT` | Background → Content | 请求重新采集页面数据 |
+| `GET_TAB_STATE` | Popup → Background | 查询当前标签页状态 |
+| `ADD_TO_WHITELIST` | Popup → Background | 添加域名到白名单 |
+| `REMOVE_FROM_WHITELIST` | Popup → Background | 从白名单移除域名 |
+| `CHECK_WHITELIST` | Popup → Background | 查询域名是否在白名单 |
 
 ---
 
-## 🔧 所需权限
+## 所需权限
 
 | 权限 | 用途 |
 | ---- | ---- |
-| `activeTab` | 读取当前标签页信息 |
-| `storage` | 持久化评分状态与缓存 |
-| `downloads` | 监听 + 取消下载 |
-| `scripting` | 注入 Content Script 与拦截脚本 |
+| `activeTab` | 读取当前活跃标签页信息 |
+| `storage` | 持久化评分状态、白名单、缓存 |
+| `downloads` | 监听下载事件、取消危险下载 |
+| `scripting` | 注入 Content Script 与下载拦截脚本 |
+| `alarms` | 定时任务支持 |
 | `notifications` | 桌面风险通知 |
-| `webNavigation` | 监听页面导航事件 |
-| `<all_urls>` | 全网站覆盖 |
+| `webNavigation` | 监听页面导航以触发分析 |
+| `<all_urls>` | 全部网站覆盖（检测与注入所需） |
 
 ---
 
-## 🛠️ 技术栈
+## 开发说明
 
-- **纯原生 JavaScript**（ES Modules），零依赖，零构建
-- Chrome Extension **Manifest V3**
-- Service Worker 事件驱动架构
-- Message Passing 通信（Background ↔ Content Script ↔ Popup）
-- SimHash 64 位 + Levenshtein 编辑距离
+### 代码注释规范
+
+所有模块均包含文件级 JSDoc 注释块，说明模块职责与核心逻辑。关键函数包含参数、返回值和使用说明。
+
+### 扩展调试
+
+1. 打开 `chrome://extensions/`
+2. 找到本扩展，点击「Service Worker」链接查看后台日志
+3. 右键扩展图标 →「检查弹出内容」查看弹窗调试信息
+
+### 图标系统
+
+弹窗 UI 使用内联 SVG 图标系统，定义在 `popup/popup.js` 的 `ICONS` 常量中。所有图标均可通过修改对应 SVG 字符串来更换，无需依赖外部资源。
 
 ---
 
-## 📝 License
+## License
 
 MIT

@@ -1,5 +1,16 @@
+/**
+ * Virus Detector — 全局常量配置
+ *
+ * 集中管理评分阈值、检测关键词、TLD 模式、消息类型、
+ * 存储键名和缓存策略。所有模块通过 import 共用同一份配置。
+ *
+ * @module constants
+ * @version 1.2.1
+ */
+
 // ==================== 评分体系 ====================
-export const SCORE_THRESHOLD = 100;          // 总阈值
+/** 触发警告的总分阈值 */
+export const SCORE_THRESHOLD = 100;
 
 // 新规则分值
 export const SCORE_RULE_1 = 60;              // 规则一：域名仿冒

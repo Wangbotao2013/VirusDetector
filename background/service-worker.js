@@ -1,12 +1,22 @@
 /**
- * 银狐木马检测 - Service Worker (主协调器)
+ * Virus Detector — Service Worker (主协调器)
+ *
+ * 是整个扩展的中央调度模块，负责协调所有后台任务：
+ *
+ * @module service-worker
+ * @version 1.2.1
  *
  * 核心职责：
- * 1. 页面导航监听 → 缓存检查 → 触发分析
- * 2. 评分汇总 → 徽章更新 + 警告弹窗 + 高危页面注入
- * 3. 下载监听 → 压缩包检测 → 取消下载 → 重新评分
- * 4. 消息通信 → popup/ content script ↔ background
- * 5. 缓存管理
+ *   1. 页面导航监听 → 白名单检查 → 缓存查询 → 触发评分分析
+ *   2. 评分汇总     → 徽章更新（绿/红/蓝） + 警告弹窗 + 下载拦截注入
+ *   3. 下载监听     → 压缩包检测 → 取消下载 → 重新评分
+ *   4. 消息路由     → 处理来自 Popup / Content Script 的 12 种消息类型
+ *   5. 白名单管理   → 存储持久化 / 增删查 / 跳过检测 / 缓存清理
+ *
+ * 生命周期：
+ *   - 安装/更新时自动初始化并清理过期缓存
+ *   - 标签页关闭时自动清理对应状态
+ *   - 5 秒冷却期内不重复触发警告（同标签页 / 同域名）
  */
 
 import { ScoringEngine } from './scoring-engine.js';
@@ -18,8 +28,12 @@ import {
   STORAGE_KEYS, CACHE_TTL
 } from '../utils/constants.js';
 
-// ==================== 状态管理 ====================
+// ==================== 标签页状态管理 ====================
 
+/**
+ * 创建初始标签页状态对象
+ * @returns {Object} 包含所有规则结果、下载状态、页面数据、白名单标志的初始状态
+ */
 function createTabState() {
   return {
     url: '', domain: '', score: 0, riskLevel: RISK_LEVEL.SAFE,
@@ -57,33 +71,42 @@ async function clearTabState(tabId) {
   } catch (e) { /* ignore */ }
 }
 
-// ==================== 图标更新 ====================
-// 始终使用统一的护盾图标，不切换图标，仅通过徽章(badge)右下角显示分数
-// 绿色底 = 安全，红色底 = 危险
+// ==================== 工具栏图标与徽章更新 ====================
+// 使用统一的护盾图标，仅通过右下角徽章（badge）的颜色和文字区分状态：
+//   setIconGreen  → 绿色底 + 分数数字 = 安全
+//   setIconRed    → 红色底 + "!"      = 危险
+//   setIconWhitelist → 蓝色底 + "✓"   = 白名单
+//   resetIcon     → 清除徽章          = 内部页面 / 未分析
 
+/** 危险状态：红色底 + "!" 徽章 */
 function setIconRed(tabId) {
-  // 不更改图标，仅设置红色徽章
   chrome.action.setBadgeText({ tabId, text: '!' }).catch(() => {});
   chrome.action.setBadgeBackgroundColor({ tabId, color: '#F44336' }).catch(() => {});
 }
 
+/** 安全状态：绿色底 + 分数数字徽章 */
 function setIconGreen(tabId, score) {
-  // 不更改图标，仅设置绿色徽章显示分数
   chrome.action.setBadgeText({ tabId, text: String(score || 0) }).catch(() => {});
   chrome.action.setBadgeBackgroundColor({ tabId, color: '#4CAF50' }).catch(() => {});
 }
 
+/** 重置：清除徽章文字 */
 function resetIcon(tabId) {
   chrome.action.setBadgeText({ tabId, text: '' }).catch(() => {});
 }
 
+/** 白名单状态：蓝色底 + "✓" 徽章 */
 function setIconWhitelist(tabId) {
   chrome.action.setBadgeText({ tabId, text: '✓' }).catch(() => {});
   chrome.action.setBadgeBackgroundColor({ tabId, color: '#2196F3' }).catch(() => {});
 }
 
 // ==================== 白名单管理 ====================
+// 白名单存储在 chrome.storage.local 中，键名为 STORAGE_KEYS.WHITELIST
+// 数据结构：string[] — 域名列表（不含协议和路径，如 "example.com"）
+// 白名单中的域名完全跳过 5 规则检测，工具栏图标显示蓝色 "✓" 徽章
 
+/** 从存储加载白名单 @returns {Promise<string[]>} */
 async function loadWhitelist() {
   try {
     const r = await chrome.storage.local.get(STORAGE_KEYS.WHITELIST);
@@ -709,15 +732,33 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   return false;
 });
 
-// 通知按钮
+// 通知按钮：点击"前往官网" → 关闭危险标签页 + 打开正确官网
 chrome.notifications.onButtonClicked.addListener(async (notifId, btnIdx) => {
   if (btnIdx === 0) {
-    const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (tabs.length > 0) {
-      const ts = await loadTabState(tabs[0].id);
-      if (ts.correctUrl) {
-        chrome.tabs.create({ url: ts.correctUrl });
+    // 获取当前活跃标签页的状态信息
+    const activeTabs = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (activeTabs.length === 0) return;
+    const ts = await loadTabState(activeTabs[0].id);
+
+    // 查找并关闭包含危险域名的所有标签页
+    const domain = ts?.domain || '';
+    if (domain) {
+      const cleanDomain = domain.replace(/^www\./i, '');
+      const allTabs = await chrome.tabs.query({});
+      const dangerTabs = allTabs.filter(tab => {
+        try {
+          const host = new URL(tab.url || '').hostname.replace(/^www\./i, '');
+          return host === cleanDomain || host.endsWith('.' + cleanDomain);
+        } catch (e) { return false; }
+      });
+      if (dangerTabs.length > 0) {
+        await chrome.tabs.remove(dangerTabs.map(t => t.id)).catch(() => {});
       }
+    }
+
+    // 打开官方正确网址
+    if (ts?.correctUrl) {
+      chrome.tabs.create({ url: ts.correctUrl }).catch(() => {});
     }
   }
 });
@@ -736,4 +777,4 @@ chrome.runtime.onInstalled.addListener(async (details) => {
   }
 });
 
-console.log('[ServiceWorker] ✅ 银狐木马检测扩展 v1.2.0 已就绪');
+console.log('[ServiceWorker] ✅ 银狐木马检测扩展 v1.2.1 已就绪');

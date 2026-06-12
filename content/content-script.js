@@ -1,11 +1,23 @@
 /**
- * 银狐木马检测 - Content Script
+ * Virus Detector — Content Script (内容脚本)
+ *
+ * 注入到每个页面中，负责采集页面数据供评分引擎使用。
+ * 在 document_idle 阶段运行，分两次采集（600ms + 3500ms）以捕获懒加载内容。
+ *
+ * @module content-script
+ * @version 1.2.1
  *
  * 职责：
- * 1. 采集页面度量（规则五：AI生成特征检测）
- * 2. 扫描ICP备案号
- * 3. 采集链接分析数据（规则四：同页链接/死链/外链文件）
- * 4. 下载拦截注入（由Service Worker触发）
+ *   1. 采集链接分析数据 (collectLinkMetrics) — 规则四数据源
+ *      - 同页链接（完整 URL 精确匹配）
+ *      - 死链检测（HEAD 请求验证，上限 5 个）
+ *      - 重复链接追踪（>=4 个元素指向同一链接 → 规则 A-③）
+ *      - 外链下载分析（下载按钮文本 + 文件扩展名）
+ *   2. 采集页面度量 (collectPageMetrics) — 规则五数据源
+ *      - HTML 行数、外部脚本数、框架标记、文本长度
+ *   3. 扫描 ICP 备案号 (findIcpStrings) — 规则三数据源
+ *      - 6 层递进扫描：footer → ICP 元素 → 底部 30% 区域 → <a> 链接 → fixed 元素 → TreeWalker
+ *   4. 响应来自 Service Worker 的 REQUEST_PAGE_TEXT 重采请求
  */
 
 (function () {

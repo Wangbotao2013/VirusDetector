@@ -1,7 +1,13 @@
 import { SUSPICIOUS_TLD_PATTERNS } from './constants.js';
 
 /**
- * URL工具函数 - 域名解析、嵌套TLD检测
+ * Virus Detector — URL 解析工具
+ *
+ * 提供域名提取、主域解析、可疑 TLD 检测等 URL 处理能力。
+ * 所有方法均为静态同步方法，依赖 constants.js 中的 SUSPICIOUS_TLD_PATTERNS。
+ *
+ * @module url-utils
+ * @version 1.2.1
  */
 export class UrlUtils {
   /**
