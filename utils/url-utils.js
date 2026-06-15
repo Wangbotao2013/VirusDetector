@@ -1,14 +1,139 @@
-import { SUSPICIOUS_TLD_PATTERNS } from './constants.js';
-
 /**
  * Virus Detector — URL 解析工具
  *
- * 提供域名提取、主域解析、可疑 TLD 检测等 URL 处理能力。
- * 所有方法均为静态同步方法，依赖 constants.js 中的 SUSPICIOUS_TLD_PATTERNS。
+ * 提供域名提取、主域解析（基于 publicsuffix.zone DNS PSL）、HTTPS 检测等 URL 处理能力。
  *
  * @module url-utils
- * @version 2.0.0
+ * @version 2.1.0
+ *
+ * PSL 查询策略：
+ *   - 通过 DNS-over-HTTPS 查询 publicsuffix.zone 获取域名的公共后缀
+ *   - 查询结果缓存于内存 Map，服务 worker 生命周期内有效
+ *   - DNS 不可用时回退到最小 TLD 集
  */
+
+// ==================== PSL 缓存与回退 ====================
+
+/** @type {Map<string, string>} hostname -> public suffix 缓存（由 DoH 异步查询填充） */
+const _pslCache = new Map();
+
+/**
+ * 回退 TLD 集：仅包含全球顶级域。
+ * 当 DNS 查询不可用时使用，覆盖最基础的 .com / .cn / .org 等。
+ */
+const _FALLBACK_TLD = new Set([
+  'com', 'org', 'net', 'edu', 'gov', 'mil', 'int',
+  'info', 'biz', 'name', 'pro', 'mobi', 'tel', 'asia',
+  'xxx', 'shop', 'online', 'site', 'app', 'dev', 'blog', 'tech',
+  'store', 'cloud', 'xyz', 'top', 'work', 'click', 'link',
+  'download', 'zip', 'review', 'country', 'kim', 'gq', 'ml',
+  'cf', 'ga', 'tk', 'io', 'ai', 'me', 'tv', 'cc', 'ws', 'fm',
+  'co', 'so', 'vc', 'pw', 'cn', 'uk', 'jp', 'kr', 'tw', 'hk',
+  'sg', 'in', 'au', 'nz', 'de', 'fr', 'it', 'es', 'nl', 'be',
+  'ch', 'at', 'se', 'no', 'dk', 'fi', 'ie', 'pt', 'ru', 'br',
+  'mx', 'ca', 'us', 'th', 'vn', 'ph', 'my', 'id', 'pk', 'bd',
+]);
+
+/**
+ * 同步获取域名的公共后缀
+ * 优先查 DNS 缓存，其次用回退 TLD 集匹配，最后返回末段
+ * @param {string} hostname
+ * @returns {string} 公共后缀
+ */
+function getPublicSuffix(hostname) {
+  // 1. DNS 缓存命中
+  const cached = _pslCache.get(hostname);
+  if (cached) return cached;
+
+  // 2. 回退 TLD 匹配（从右向左最长匹配）
+  const parts = hostname.split('.');
+  for (let len = Math.min(parts.length, 3); len >= 1; len--) {
+    const candidate = parts.slice(-len).join('.');
+    if (_FALLBACK_TLD.has(candidate)) {
+      return candidate;
+    }
+  }
+  // 3. 兜底返回末段
+  return parts[parts.length - 1] || '';
+}
+
+/**
+ * 基于公共后缀提取可注册域名 (Registrable Domain)。
+ *
+ * 算法：获取公共后缀 -> 取后缀 + 前面一段
+ *
+ * 示例：
+ *   roms.lian86.top     + PSL="top"    -> lian86.top
+ *   www.baidu.com       + PSL="com"    -> baidu.com
+ *   www.pc-sysceo.hl.cn + PSL="hl.cn"  -> pc-sysceo.hl.cn
+ *   sub.example.co.uk   + PSL="co.uk"  -> example.co.uk
+ *
+ * @param {string} hostname - 完整主机名
+ * @returns {string} 可注册域名
+ */
+function extractRegistrableDomain(hostname) {
+  if (!hostname || !hostname.includes('.')) return hostname;
+
+  const parts = hostname.toLowerCase().split('.');
+  if (parts.length < 2) return hostname;
+
+  const publicSuffix = getPublicSuffix(hostname);
+  const suffixParts = publicSuffix.split('.');
+  const source = _pslCache.has(hostname) ? 'dns-cache' : 'fallback';
+
+  if (suffixParts.length >= parts.length) {
+    console.log(`[UrlUtils] PSL extract: ${hostname} -> suffix="${publicSuffix}" (${source}) -> no registrable label, keep original`);
+    return hostname;
+  }
+
+  const registrable = parts.slice(-(suffixParts.length + 1)).join('.');
+
+  if (!registrable.includes('.')) {
+    console.log(`[UrlUtils] PSL extract: ${hostname} -> suffix="${publicSuffix}" (${source}) -> would be "${registrable}", keeping original`);
+    return hostname;
+  }
+
+  console.log(`[UrlUtils] PSL extract: ${hostname} -> suffix="${publicSuffix}" (${source}) -> "${registrable}"`);
+  return registrable;
+}
+
+/**
+ * 通过 DoH 异步查询域名的公共后缀（基于 publicsuffix.zone）
+ * 由 WhoisClient 调用以预热缓存，不阻塞当前请求
+ * @param {string} hostname - 待查询域名
+ * @returns {Promise<string|null>} 公共后缀（如 "top"），失败返回 null
+ */
+export async function refreshPublicSuffixDNS(hostname) {
+  const queryName = `${hostname}.query.publicsuffix.zone`;
+  const url = `https://dns.google/resolve?name=${encodeURIComponent(queryName)}&type=PTR`;
+
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 5000);
+
+    const response = await fetch(url, { signal: controller.signal });
+    clearTimeout(timeoutId);
+
+    if (!response.ok) return null;
+
+    const json = await response.json();
+    if (json.Status !== 0 || !json.Answer || json.Answer.length === 0) return null;
+
+    const raw = json.Answer[0].data;
+    if (!raw || typeof raw !== 'string') return null;
+
+    const suffix = raw.replace(/\.$/, '');
+    _pslCache.set(hostname, suffix);
+    console.log(`[UrlUtils] DNS PSL cache updated: ${hostname} -> "${suffix}"`);
+    return suffix;
+  } catch (e) {
+    console.warn(`[UrlUtils] DoH PSL query failed (${hostname}):`, e.message);
+    return null;
+  }
+}
+
+// ==================== UrlUtils 类 ====================
+
 export class UrlUtils {
   /**
    * 从完整URL中提取主机名（域名）
@@ -20,7 +145,6 @@ export class UrlUtils {
       const urlObj = new URL(url);
       return urlObj.hostname;
     } catch (e) {
-      // 尝试修复不完整的URL
       if (!url.startsWith('http')) {
         try {
           const fixed = new URL('https://' + url);
@@ -34,55 +158,13 @@ export class UrlUtils {
   }
 
   /**
-   * 获取有效二级域名（eSLD）
-   * 简化版本：取最后两个标签作为主域名
+   * 获取可注册域名（基于 PSL）
+   * 替代原来的 "取最后两段" 简化逻辑，支持多级公共后缀（co.uk / com.cn 等）
    * @param {string} hostname - 主机名
-   * @returns {string} 主域名
+   * @returns {string} 可注册域名
    */
   static getMainDomain(hostname) {
-    const parts = hostname.replace(/^www\./i, '').split('.');
-    if (parts.length <= 2) {
-      return hostname;
-    }
-
-    // 处理常见的双段TLD
-    const doubleTlds = ['com.cn', 'net.cn', 'org.cn', 'gov.cn', 'edu.cn',
-                        'co.uk', 'co.jp', 'co.kr', 'com.hk', 'com.tw'];
-    const tld2 = parts.slice(-2).join('.');
-    const tld3 = parts.slice(-3).join('.');
-
-    // 检查是否双段TLD
-    if (doubleTlds.some(dt => hostname.endsWith('.' + dt))) {
-      // 对于 .com.cn 等，返回最后3段
-      return parts.slice(-3).join('.');
-    }
-
-    // 默认返回最后2段
-    return parts.slice(-2).join('.');
-  }
-
-  /**
-   * 检测域名是否包含可疑的嵌套TLD
-   * @param {string} hostname - 主机名
-   * @returns {boolean} 是否可疑
-   */
-  static hasSuspiciousNestedTLD(hostname) {
-    return SUSPICIOUS_TLD_PATTERNS.some(pattern => pattern.test(hostname));
-  }
-
-  /**
-   * 获取可疑TLD的详细信息
-   * @param {string} hostname - 主机名
-   * @returns {string[]} 匹配的可疑模式
-   */
-  static getSuspiciousTLDDetails(hostname) {
-    const matches = [];
-    for (const pattern of SUSPICIOUS_TLD_PATTERNS) {
-      if (pattern.test(hostname)) {
-        matches.push(pattern.source.replace(/\\/g, ''));
-      }
-    }
-    return matches;
+    return extractRegistrableDomain(hostname);
   }
 
   /**
@@ -123,7 +205,7 @@ export class UrlUtils {
   }
 
   /**
-   * 从主机名中移除开头的www
+   * 从主机名中移除开头的 www
    * @param {string} hostname
    * @returns {string}
    */

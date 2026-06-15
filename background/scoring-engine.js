@@ -4,7 +4,7 @@
  * 实现多规则评分体系，总分 >= 100 分时判定为危险网站。
  *
  * @module scoring-engine
- * @version 2.0.0
+ * @version 2.1.0-alpha.1
  *
  * 评分规则：
  *   规则一 域名仿冒         → 60 分 | 5 层递进：子串包含 → 段级关键词 → 可疑TLD → 关键词堆叠 → 编辑距离
@@ -147,15 +147,6 @@ export class ScoringEngine {
       result.officialName = spoof.entry.name;
       result.detail = `域名仿冒检测: ${spoof.matchedBy}`;
       result.detailCN = `✗ 域名仿冒: 疑似冒充「${spoof.entry.name}」(${spoof.correctUrl})`;
-      return result;
-    }
-
-    // 可疑TLD但未匹配到具体品牌
-    if (UrlUtils.hasSuspiciousNestedTLD(domain)) {
-      result.score = SCORE_RULE_1;  // +60（可疑TLD本身就是强信号）
-      result.triggered = true;
-      result.detail = `检测到可疑嵌套域名: ${domain}`;
-      result.detailCN = `✗ 域名可疑: 使用了非常见顶级域名 (${domain})`;
       return result;
     }
 
@@ -469,12 +460,21 @@ export class ScoringEngine {
 
     // 调用 Whois API
     const whoisResult = await WhoisClient.lookup(domain);
-    if (!whoisResult || whoisResult.creationDays < 0) {
+
+    // API 真正失败（网络错误、HTTP 异常、解析失败等）
+    if (!whoisResult) {
       const errInfo = WhoisClient.lastError;
       const errPhase = errInfo ? ` [${errInfo.phase}]` : '';
       const errMsg = errInfo ? `: ${errInfo.message}` : '';
       result.detail = `Whois API 查询失败${errPhase}${errMsg} (${domain})`;
       result.detailCN = `- 域名年龄: API 查询失败${errPhase}`;
+      return result;
+    }
+
+    // API 调用成功，但 creation_days 数据未知或不可靠（如免费 API 返回 0 作为占位值）
+    if (whoisResult.creationDays < 0) {
+      result.detail = `Whois API 返回的域名注册天数未知 (${domain})`;
+      result.detailCN = '- 域名年龄: 注册时间未知';
       return result;
     }
 
@@ -525,15 +525,12 @@ export class ScoringEngine {
     // 优先复用域名年龄评分中的 creationDays，避免重复 API 调用
     let creationDays = domainAgeResult?.creationDays ?? -1;
     if (creationDays < 0) {
-      const whoisResult = await WhoisClient.lookup(domain);
-      if (!whoisResult || whoisResult.creationDays < 0) {
-        const errInfo = WhoisClient.lastError;
-        const errPhase = errInfo ? ` [${errInfo.phase}]` : '';
-        result.detail = `Whois API 查询失败${errPhase}，无法应用域名年龄减分`;
-        result.detailCN = `- 域名减分: API 查询失败${errPhase}`;
-        return result;
-      }
-      creationDays = whoisResult.creationDays;
+      // 不再重试 API：_evaluateDomainAge 已经调用过 WhoisClient，
+      // 若 creationDays < 0 说明数据确实不可用（免费 API 对此域名无数据），
+      // 重复请求只会浪费 API 配额并增加延迟（速率限制器每两次请求间隔 2s）
+      result.detail = `域名注册天数未知，无法应用域名年龄减分`;
+      result.detailCN = '- 域名减分: 注册时间未知';
+      return result;
     }
 
     const x = creationDays;

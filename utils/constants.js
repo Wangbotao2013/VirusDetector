@@ -5,7 +5,7 @@
  * 存储键名和缓存策略。所有模块通过 import 共用同一份配置。
  *
  * @module constants
- * @version 2.0.0
+ * @version 2.1.0-alpha.1
  */
 
 // ==================== 评分体系 ====================
@@ -45,31 +45,6 @@ export const ARCHIVE_EXTENSIONS = [
   '.bz2', '.xz', '.z', '.iso', '.cab', '.arj', '.lzh',
   '.tar.bz2', '.tar.xz', '.gz2', '.zst'
 ]; 
-
-// ==================== 可疑TLD模式 ====================
-export const SUSPICIOUS_TLD_PATTERNS = [
-  /\.cn\.com$/i,
-  /\.cn\.org$/i,
-  /\.cn\.net$/i,
-  /\.com\.cn\.com$/i,
-  /\.top\.com$/i,
-  /\.xyz$/i,
-  /\.top$/i,
-  /\.work$/i,
-  /\.click$/i,
-  /\.link$/i,
-  /\.download$/i,
-  /\.zip$/i,
-  /\.review$/i,
-  /\.country$/i,
-  /\.kim$/i,
-  /\.cn\.[a-z]{2,}$/i,
-  /\.gq$/i,
-  /\.ml$/i,
-  /\.cf$/i,
-  /\.ga$/i,
-  /\.tk$/i
-];
 
 // ==================== 规则四：链接分析 ====================
 // 链接指向当前页的判断阈值

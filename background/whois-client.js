@@ -5,7 +5,7 @@
  * 提供带内存缓存和速率限制的异步查询接口，供评分引擎和服务工作线程使用。
  *
  * @module whois-client
- * @version 2.0.0
+ * @version 2.1.0-alpha.1
  *
  * API 规范：
  *   - 接口地址：GET http://api.whoiscx.com/whois/?domain={domain}
@@ -19,11 +19,18 @@
  *   - 内存 Map 缓存，TTL = 24 小时（由 constants.js 中的 WHOIS_CACHE_TTL 配置）
  *   - 缓存命中直接返回，不消耗 API 配额
  *   - 查询失败不缓存，下次请求重试
+ *
+ * PSL 查询策略：
+ *   - 通过 DNS-over-HTTPS 查询 publicsuffix.zone 获取域名的公共后缀
+ *   - 查询结果缓存于内存 Map，服务 worker 生命周期内有效
+ *   - DNS 不可用时回退到最小 TLD 集
  */
 
 import {
   WHOIS_API_URL, WHOIS_CACHE_TTL, WHOIS_API_TIMEOUT
 } from '../utils/constants.js';
+import { refreshPublicSuffixDNS } from '../utils/url-utils.js';
+import { UrlUtils } from '../utils/url-utils.js';
 
 // ==================== 内存缓存 ====================
 
@@ -89,6 +96,33 @@ function _recordError(domain, phase, message, extra = {}) {
   console.error(`[WhoisClient] ${phaseLabel} (${domain}): ${message}`, extra);
 }
 
+// ==================== 辅助函数 ====================
+
+/**
+ * 从 creation_time 日期字符串计算已注册天数
+ * WhoisCX API 返回格式如 "2012-04-25 12:36:40" 或 "2012-04-25"
+ * @param {string} timeStr - 创建时间字符串
+ * @returns {number} 天数，解析失败返回 -1
+ */
+function _parseDaysFromTime(timeStr) {
+  if (!timeStr || typeof timeStr !== 'string') return -1;
+  try {
+    const match = timeStr.match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (!match) return -1;
+    const creationDate = new Date(
+      parseInt(match[1], 10),
+      parseInt(match[2], 10) - 1,
+      parseInt(match[3], 10)
+    );
+    if (isNaN(creationDate.getTime())) return -1;
+    const diffMs = Date.now() - creationDate.getTime();
+    if (diffMs < 0) return -1;
+    return Math.floor(diffMs / (1000 * 60 * 60 * 24));
+  } catch (e) {
+    return -1;
+  }
+}
+
 // ==================== 公开接口 ====================
 
 export class WhoisClient {
@@ -106,18 +140,28 @@ export class WhoisClient {
       return null;
     }
 
-    // 规范化域名
-    const normalizedDomain = domain.toLowerCase().trim();
+    // 规范化域名：基于 PSL 提取可注册域名
+    // 例如 roms.lian86.top -> lian86.top, www.pc-sysceo.hl.cn -> pc-sysceo.hl.cn
+    const rawDomain = domain.toLowerCase().trim();
+    const normalizedDomain = UrlUtils.getMainDomain(rawDomain);
 
-    if (!normalizedDomain.includes('.')) {
-      _recordError(normalizedDomain, 'invalid', '域名格式无效（缺少 "."）', { domain });
+    if (!normalizedDomain || !normalizedDomain.includes('.')) {
+      _recordError(normalizedDomain || domain, 'invalid', '域名格式无效', { domain });
       return null;
     }
+
+    if (normalizedDomain !== rawDomain) {
+      console.log(`[WhoisClient] PSL 域名提取: ${rawDomain} -> ${normalizedDomain}`);
+    }
+
+    // 异步触发 DoH PSL 查询（不阻塞当前请求，预填充缓存供后续使用）
+    refreshPublicSuffixDNS(rawDomain).catch(() => {});
 
     // 1. 检查缓存
     const cached = _cache.get(normalizedDomain);
     if (cached && (Date.now() - cached.timestamp) < WHOIS_CACHE_TTL) {
-      console.log(`[WhoisClient] 缓存命中: ${normalizedDomain} (注册${cached.result.creationDays}天)`);
+      const ageLabel = cached.result.creationDays >= 0 ? `注册${cached.result.creationDays}天` : '注册天数未知';
+      console.log(`[WhoisClient] 缓存命中: ${normalizedDomain} (${ageLabel})`);
       return cached.result;
     }
 
@@ -138,7 +182,6 @@ export class WhoisClient {
         method: 'GET',
         signal: controller.signal,
         headers: { 'Accept': 'application/json' }
-        // 注意：不设置 mode: 'no-cors'，因为需要读取响应体
       });
 
       clearTimeout(timeoutId);
@@ -199,13 +242,61 @@ export class WhoisClient {
 
     // 8. 提取并构建结果
     const info = json.data.info || {};
+    const domainSuffix = json.data.domain_suffix || '';
+    const creationTime = info.creation_time || info.registration_time || json.data.creation_time || json.data.registration_time || '';
+    const expirationTime = info.expiration_time || info.registration_expiration_time || json.data.expiration_time || '';
+
+    // 调试日志
+    console.log(`[WhoisClient] API 原始响应结构 (${normalizedDomain}):`,
+      `data keys: [${Object.keys(json.data).join(', ')}]`,
+      `info keys: [${Object.keys(info).join(', ')}]`,
+      `data.creation_days=${json.data.creation_days}`,
+      `info.creation_days=${info.creation_days}`,
+      `data.creation_time=${JSON.stringify(json.data.creation_time)}`,
+      `info.creation_time=${JSON.stringify(info.creation_time)}`);
+
+    // creation_days 多层回退读取
+    let creationDaysRaw = info.creation_days;
+    if (creationDaysRaw === undefined || creationDaysRaw === null) {
+      creationDaysRaw = json.data.creation_days;
+    }
+
+    let creationDays = -1;
+    let creationDaysSource = 'unknown';
+
+    if (typeof creationDaysRaw === 'number' && creationDaysRaw > 0) {
+      creationDays = creationDaysRaw;
+      creationDaysSource = typeof info.creation_days === 'number' ? 'api_info' : 'api_data';
+    } else if (typeof creationDaysRaw === 'number' && creationDaysRaw === 0) {
+      console.warn(`[WhoisClient] API returned creation_days=0 (${normalizedDomain}), trying creation_time fallback`);
+      const calculated = _parseDaysFromTime(creationTime);
+      if (calculated > 0) {
+        creationDays = calculated;
+        creationDaysSource = 'calculated_from_time';
+        console.log(`[WhoisClient] calculated ${creationDays} days from creation_time`);
+      } else {
+        console.warn(`[WhoisClient] creation_time fallback also failed (${normalizedDomain})`);
+        creationDays = -1;
+        creationDaysSource = 'unreliable_zero';
+      }
+    } else {
+      console.warn(`[WhoisClient] creation_days missing (${normalizedDomain}), data=${typeof json.data.creation_days}, info=${typeof info.creation_days}`);
+      creationDaysSource = 'missing';
+    }
+
+    // valid_days 同样采用多层回退
+    let validDaysRaw = info.valid_days;
+    if (validDaysRaw === undefined || validDaysRaw === null) {
+      validDaysRaw = json.data.valid_days;
+    }
+
     const result = {
       domain: json.data.domain || normalizedDomain,
-      domainSuffix: json.data.domain_suffix || '',
-      creationDays: typeof info.creation_days === 'number' ? info.creation_days : -1,
-      validDays: typeof info.valid_days === 'number' ? info.valid_days : -1,
-      creationTime: info.creation_time || '',
-      expirationTime: info.expiration_time || '',
+      domainSuffix,
+      creationDays,
+      validDays: typeof validDaysRaw === 'number' ? validDaysRaw : -1,
+      creationTime,
+      expirationTime,
       isExpire: info.is_expire === 1,
       registrarName: info.registrar_name || '',
       domainStatus: Array.isArray(info.domain_status) ? info.domain_status : [],
@@ -213,28 +304,30 @@ export class WhoisClient {
       queryTime: json.data.query_time || ''
     };
 
-    // 9. 写入缓存
-    _cache.set(normalizedDomain, {
-      result,
-      timestamp: Date.now()
-    });
+    // 9. 写入缓存（仅当 creationDays 有效时缓存）
+    if (creationDays > 0) {
+      _cache.set(normalizedDomain, { result, timestamp: Date.now() });
+      console.log(`[WhoisClient] cache write: ${normalizedDomain} (creationDays=${creationDays}, source=${creationDaysSource})`);
+    } else {
+      console.warn(`[WhoisClient] skip cache: ${normalizedDomain} (creationDays=${creationDays}, source=${creationDaysSource})`);
+    }
 
-    // 清除上一次的错误记录（查询成功）
     _lastError = null;
 
-    console.log(`[WhoisClient] ✅ 查询成功: ${normalizedDomain} (注册${result.creationDays}天, 剩余${result.validDays}天, 注册商: ${result.registrarName || '未知'})`);
+    const ageLabel = result.creationDays >= 0 ? `registered ${result.creationDays}d` : 'age unknown';
+    const validLabel = result.validDays >= 0 ? `expires in ${result.validDays}d` : 'validity unknown';
+    console.log(`[WhoisClient] lookup OK: ${normalizedDomain} (${ageLabel}, ${validLabel}, registrar: ${result.registrarName || 'unknown'})`);
     return result;
   }
 
   /**
    * 从缓存中获取 Whois 结果（不发起网络请求）
-   *
    * @param {string} domain - 域名
-   * @returns {WhoisResult|null} 缓存命中返回结果，否则返回 null
+   * @returns {WhoisResult|null}
    */
   static getCached(domain) {
     if (!domain) return null;
-    const normalizedDomain = domain.toLowerCase().trim();
+    const normalizedDomain = UrlUtils.getMainDomain(domain.toLowerCase().trim());
     const cached = _cache.get(normalizedDomain);
     if (cached && (Date.now() - cached.timestamp) < WHOIS_CACHE_TTL) {
       return cached.result;
@@ -242,36 +335,20 @@ export class WhoisClient {
     return null;
   }
 
-  /**
-   * 获取最近一次查询失败的错误详情
-   * 查询成功时自动清除，可用于调试和日志上报
-   *
-   * @returns {WhoisErrorInfo|null}
-   */
   static get lastError() {
     return _lastError;
   }
 
-  /**
-   * 清除最近一次错误记录
-   */
   static clearLastError() {
     _lastError = null;
   }
 
-  /**
-   * 清除指定域名的缓存
-   * @param {string} domain - 域名
-   */
   static clearCache(domain) {
     if (domain) {
-      _cache.delete(domain.toLowerCase().trim());
+      _cache.delete(UrlUtils.getMainDomain(domain.toLowerCase().trim()));
     }
   }
 
-  /**
-   * 清除所有缓存
-   */
   static clearAllCache() {
     _cache.clear();
   }
@@ -297,7 +374,7 @@ export class WhoisClient {
 /**
  * @typedef {Object} WhoisErrorInfo
  * @property {string} domain    - 查询的域名
- * @property {string} phase     - 失败阶段（connect | http_status | parse | timeout | invalid）
+ * @property {string} phase     - 失败阶段
  * @property {string} message   - 错误描述
  * @property {number} timestamp - 错误发生时间戳
  * @property {string} [url]     - 请求的完整 URL

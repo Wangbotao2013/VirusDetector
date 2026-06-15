@@ -4,7 +4,7 @@
  * 是整个扩展的中央调度模块，负责协调所有后台任务：
  *
  * @module service-worker
- * @version 2.0.0
+ * @version 2.1.0-alpha.1
  *
  * 核心职责：
  *   1. 页面导航监听 → 白名单检查 → 缓存查询 → 触发评分分析
@@ -28,6 +28,46 @@ import {
   SCORE_THRESHOLD, RISK_LEVEL, MSG_TYPES,
   STORAGE_KEYS, CACHE_TTL
 } from '../utils/constants.js';
+
+// ==================== 缓存清洗 ====================
+
+/**
+ * 清理 ruleResults 中的瞬时事件数据，仅保留页面级检测结果供缓存使用。
+ *
+ * 被清除的字段：
+ *   - downloadLink.whoisResult   （下载链接域名的 Whois 数据，非当前页面所有）
+ *   - downloadLink.downloadDomain（下载链接的特定域名）
+ *   - rule2.fileName            （下载的具体文件名，非页面固有属性）
+ *
+ * 分数不受影响（已在 CacheManager 的 score 字段中持久化）。
+ *
+ * @param {Object} ruleResults - 完整规则结果对象
+ * @returns {Object} 清洗后的副本（不修改原对象）
+ */
+function sanitizeRuleResultsForCache(ruleResults) {
+  if (!ruleResults) return {};
+  // 浅拷贝 + 替换瞬时字段
+  const sanitized = { ...ruleResults };
+
+  // 清洗 downloadLink：只保留分数和触发状态，移除 whoisResult 和 downloadDomain
+  if (sanitized.downloadLink && typeof sanitized.downloadLink === 'object') {
+    sanitized.downloadLink = {
+      ...sanitized.downloadLink,
+      downloadDomain: '',
+      whoisResult: null
+    };
+  }
+
+  // 清洗 rule2：移除具体文件名
+  if (sanitized.rule2 && typeof sanitized.rule2 === 'object') {
+    sanitized.rule2 = {
+      ...sanitized.rule2,
+      fileName: null
+    };
+  }
+
+  return sanitized;
+}
 
 // ==================== 模块初始化 ====================
 
@@ -494,12 +534,12 @@ async function analyzePage(tabId, url, domain, pageMetrics, linkMetrics) {
 
     await saveTabState(tabId, tabState);
 
-    // 写入缓存
+    // 写入缓存（清洗瞬时事件数据，防止缓存污染）
     await CacheManager.set(domain, {
       score: evalResult.totalScore,
       isMalicious: evalResult.isSuspicious,
       correctUrl: evalResult.correctUrl,
-      ruleResults: evalResult.breakdown
+      ruleResults: sanitizeRuleResultsForCache(evalResult.breakdown)
     });
 
     // 根据分数执行响应
@@ -648,11 +688,11 @@ chrome.downloads.onCreated.addListener(async (downloadItem) => {
         console.error('[ServiceWorker] 取消下载失败:', e);
       }
 
-      // 更新缓存
+      // 更新缓存（清洗瞬时事件数据，防止缓存污染）
       await CacheManager.set(tabState.domain, {
         score: newScore, isMalicious: true,
         correctUrl: tabState.correctUrl,
-        ruleResults: tabState.ruleResults
+        ruleResults: sanitizeRuleResultsForCache(tabState.ruleResults)
       });
 
       // 触发完整高危响应
@@ -677,6 +717,23 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const tabId = sender.tab ? sender.tab.id : null;
       if (!tabId) { sendResponse({ received: false }); return false; }
       const { url, domain, pageText, icpStrings, pageMetrics, linkMetrics } = message.payload;
+
+      // 竞态条件防护：校验 content script 所在标签页的当前 URL 是否与采集数据的域名一致
+      // 若用户已导航到其他页面，则丢弃此消息（旧页面的数据不应污染新页面的检测结果）
+      if (sender.tab && sender.tab.url) {
+        try {
+          const senderTabDomain = new URL(sender.tab.url).hostname;
+          if (senderTabDomain !== domain) {
+            console.warn('[ServiceWorker] ⚠️ 丢弃过期内容脚本数据:',
+              `采集域名=${domain}, 当前标签页域名=${senderTabDomain} (用户已导航到其他页面)`);
+            sendResponse({ received: false, reason: 'stale_content_script' });
+            return false;
+          }
+        } catch (e) {
+          // URL 解析失败，继续处理（保守策略）
+          console.warn('[ServiceWorker] 无法解析 sender.tab.url，跳过竞态校验:', sender.tab.url);
+        }
+      }
 
       loadTabState(tabId).then(async (ts) => {
         ts.pageText = pageText || '';
@@ -835,4 +892,4 @@ chrome.runtime.onInstalled.addListener(async (details) => {
   }
 });
 
-console.log('[ServiceWorker] ✅ 银狐木马检测扩展 v2.0.0 已就绪');
+console.log('[ServiceWorker] ✅ 银狐木马检测扩展 v2.1.0-alpha.1 已就绪');
