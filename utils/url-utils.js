@@ -4,7 +4,7 @@
  * 提供域名提取、主域解析（基于 publicsuffix.zone DNS PSL）、HTTPS 检测等 URL 处理能力。
  *
  * @module url-utils
- * @version 2.1.0
+ * @version 2.2.0
  *
  * PSL 查询策略：
  *   - 通过 DNS-over-HTTPS 查询 publicsuffix.zone 获取域名的公共后缀

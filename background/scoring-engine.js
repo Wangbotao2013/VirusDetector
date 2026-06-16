@@ -4,14 +4,15 @@
  * 实现多规则评分体系，总分 >= 100 分时判定为危险网站。
  *
  * @module scoring-engine
- * @version 2.1.0-alpha.2
+ * @version 2.2.0
  *
  * 评分规则：
  *   规则一 域名仿冒         → 60 分 | 5 层递进：子串包含 → 段级关键词 → 可疑TLD → 关键词堆叠 → 编辑距离
  *   规则二 压缩包下载       → 40 分 | 域名已有 >=30 分嫌疑时给高分，否则 10 分弱信号
  *   规则三 ICP 备案缺失     → 50 分 | 对所有网站检测 ICP 备案号
  *   规则四 链接分析         → 最高 70 分 | Part A (同页/死链/重复链接) + Part B (下载按钮/压缩包链接)
- *   规则五 代码工程化       → 最高 30 分 | 三信号组合判定（DOM复杂度+框架检测+外部资源），2信号+20，3信号+30
+ *   规则五 代码工程化       → 最高 60 分 | 三信号组合判定（DOM复杂度+框架检测+外部资源），2信号+20，3信号+30
+ *                              + 子规则：关键词预筛选 + Emoji密度检测（推广页面Emoji滥用），最高+30
  *   域名年龄评分             → 最高 60 分 | 基于 Whois API 的 S 型衰减函数计分，新注册域名更可疑
  *   域名年龄减分             → 最高 20 分 | 注册时间长的域名可抵消部分可疑分数（需当前分数 >= 20）
  *   下载链接跨域检测         → 最高 20 分 | 跨域下载 + 新注册域名附加分（由 Service Worker 下载事件触发）
@@ -20,6 +21,7 @@
  *   - 官方网站早期退出：域名+ICP 均确认安全后跳过规则四/五
  *   - 规则四 Part B-b 仅对压缩包链接加分，普通文件链接不再单独计分
  *   - 规则五区分三信号组合：DOM节点数+框架标记+外部资源，避免对正常简单页面误报
+ *   - 规则五子规则：先通过推广关键词预筛选确认页面性质，再计算Emoji密度，分段线性映射加分
  *   - Whois API 查询结果缓存 24 小时，避免重复请求
  */
 
@@ -38,7 +40,10 @@ import {
   DUPLICATE_LINK_THRESHOLD,
   SCORE_DOMAIN_AGE_MAX, DOMAIN_AGE_DECAY_A, DOMAIN_AGE_DECAY_B,
   SCORE_DOMAIN_AGE_BONUS_MAX, DOMAIN_AGE_BONUS_SCORE_THRESHOLD,
-  DOMAIN_AGE_BONUS_MIN_DAYS, DOMAIN_AGE_BONUS_MAX_DAYS
+  DOMAIN_AGE_BONUS_MIN_DAYS, DOMAIN_AGE_BONUS_MAX_DAYS,
+  EMOJI_PROMO_KEYWORDS, EMOJI_KEYWORD_MATCH_THRESHOLD,
+  EMOJI_MIN_TEXT_LENGTH, EMOJI_DENSITY_MAX_SCORE,
+  EMOJI_DENSITY_THRESHOLD_LOW, EMOJI_DENSITY_THRESHOLD_HIGH
 } from '../utils/constants.js';
 
 export class ScoringEngine {
@@ -80,7 +85,7 @@ export class ScoringEngine {
       };
     } else {
       result4 = this._evaluateRule4(linkMetrics, domain);
-      result5 = this._evaluateRule5(pageMetrics, domain);
+      result5 = this._evaluateRule5(pageMetrics, domain, pageText);
     }
 
     // 规则二从下载状态获取（由下载事件异步触发）
@@ -341,7 +346,7 @@ export class ScoringEngine {
     return result;
   }
 
-  // ==================== 规则五：代码工程化检测（最高30分） ====================
+  // ==================== 规则五：代码工程化检测（最高60分） ====================
   /**
    * 检测页面代码质量，基于三信号组合判定体系：
    *
@@ -364,8 +369,9 @@ export class ScoringEngine {
    *
    * @param {Object} pageMetrics - 来自 content script 的页面度量
    * @param {string} domain - 页面域名（保留参数，供未来扩展）
+   * @param {string} pageText - 页面文本内容（用于子规则：关键词预筛选 + Emoji密度检测）
    */
-  static _evaluateRule5(pageMetrics, domain) {
+  static _evaluateRule5(pageMetrics, domain, pageText) {
     const result = {
       score: 0, triggered: false, status: 'pass',
       detail: '', detailCN: '代码工程化: 正常',
@@ -379,63 +385,181 @@ export class ScoringEngine {
       return result;
     }
 
-    // 前提检查：文本内容太少 → 跳过（避免空白页/占位页误报）
-    if (pageMetrics.textLength < AI_PAGE_THRESHOLDS.MIN_TEXT_LENGTH) {
-      result.status = 'neutral';
-      result.detail = '页面文本内容不足，跳过代码工程化检测';
-      result.detailCN = '代码工程化: 内容不足';
+    // ---- 子规则 B：关键词预筛选 + Emoji 密度检测（独立于三信号体系） ----
+    const emojiDensityResult = this._evaluateRule5EmojiDensity(pageText);
+
+    // ---- 子规则 A：三信号组合判定 ----
+    let signalScore = 0;
+    let signalDetail = '';
+    let signalDetailCN = '';
+    let signalTriggered = false;
+
+    if (pageMetrics.textLength >= AI_PAGE_THRESHOLDS.MIN_TEXT_LENGTH) {
+      const domNodeCount = pageMetrics.domNodeCount || 0;
+      const hasExternal = !!(pageMetrics.hasExternalResources);
+      const totalExternal = pageMetrics.totalExternalResources || 0;
+      const hasFramework = !!(pageMetrics.hasFrameworkMarkers);
+
+      // 收集命中的信号
+      const signals = [];
+
+      // 信号1：DOM节点数过少
+      if (domNodeCount > 0 && domNodeCount < AI_PAGE_THRESHOLDS.MIN_DOM_NODES) {
+        signals.push(`DOM节点仅${domNodeCount}个`);
+      }
+
+      // 信号2：无主流框架痕迹
+      if (!hasFramework) {
+        signals.push('未检测到主流框架');
+      }
+
+      // 信号3：外部资源过少
+      if (!hasExternal || totalExternal < AI_PAGE_THRESHOLDS.MIN_EXTERNAL_RESOURCES) {
+        signals.push(`外部资源仅${totalExternal}个`);
+      }
+
+      const signalCount = signals.length;
+
+      // 组合判定
+      if (signalCount >= AI_PAGE_THRESHOLDS.RULE_5_SIGNALS_FULL) {
+        signalScore = SCORE_RULE_5;
+        signalTriggered = true;
+        signalDetail = `代码工程质量差(${signalCount}/3信号): ${signals.join('; ')}`;
+        signalDetailCN = `代码工程化: 高度可疑 (${signals.join(', ')})`;
+      } else if (signalCount >= AI_PAGE_THRESHOLDS.RULE_5_SIGNALS_PARTIAL) {
+        signalScore = SCORE_RULE_5_PARTIAL;
+        signalTriggered = true;
+        signalDetail = `代码工程化弱信号(${signalCount}/3信号): ${signals.join('; ')}`;
+        signalDetailCN = `代码工程化: 中度可疑 (${signals.join(', ')})`;
+      } else if (signalCount === 1) {
+        signalDetail = `代码工程化基本正常（仅${signals[0]}）`;
+        signalDetailCN = '代码工程化: 基本正常';
+      } else {
+        signalDetail = '代码工程化检测通过（DOM节点' + domNodeCount + '，外部资源' + totalExternal + '个）';
+        signalDetailCN = '代码工程化: 正常';
+      }
+    } else {
+      signalDetail = '页面文本内容不足，跳过三信号检测';
+      signalDetailCN = '代码工程化: 内容不足';
+    }
+
+    // ---- 合并子规则 A + B ----
+    const totalScore = signalScore + emojiDensityResult.score;
+    result.score = totalScore;
+    result.triggered = signalTriggered || emojiDensityResult.triggered;
+
+    // 组装 detail
+    const parts = [];
+    const partsCN = [];
+
+    if (signalScore > 0 || !emojiDensityResult.triggered) {
+      // 三信号有结果，或 emoji 未触发时以三信号为主
+      parts.push(signalDetail);
+      partsCN.push(signalDetailCN);
+    }
+    if (emojiDensityResult.triggered) {
+      parts.push(emojiDensityResult.detail);
+      partsCN.push(emojiDensityResult.detailCN);
+    }
+
+    if (totalScore > 0) {
+      result.detail = parts.join(' | ');
+      result.detailCN = partsCN.join(' | ');
+    } else if (parts.length > 0) {
+      result.detail = signalDetail;
+      result.detailCN = signalDetailCN;
+    }
+
+    return result;
+  }
+
+  /**
+   * 规则五子规则：关键词预筛选 + Emoji 密度检测
+   *
+   * 先通过推广/产品关键词预筛选确认页面是否为推广性质，
+   * 再计算 Emoji 密度并通过分段线性映射得出加分值（上限 30 分）。
+   *
+   * 判定链路：
+   *   1. pageText 长度 < 100 字符 → 跳过（0 分）
+   *   2. 推广关键词匹配数 < 阈值（默认 1） → 跳过（0 分，非推广页面）
+   *   3. 计算 Emoji 密度 density = (emojiCount / pageText.length) * 1000
+   *   4. 分段线性映射：
+   *        density < 2.0          → 0 分
+   *        2.0 ≤ density < 10.0   → (density - 2) / 8 * 30
+   *        density ≥ 10.0          → 30 分（封顶）
+   *
+   * @param {string} pageText - 页面文本内容
+   * @returns {Object} 包含 score, triggered, detail, detailCN, keywordMatchCount, emojiCount, density 的结果
+   */
+  static _evaluateRule5EmojiDensity(pageText) {
+    const result = {
+      score: 0, triggered: false,
+      detail: '', detailCN: 'Emoji密度: 正常',
+      keywordMatchCount: 0, emojiCount: 0, density: 0
+    };
+
+    // 1. 文本长度不足 → 跳过
+    if (!pageText || pageText.length < EMOJI_MIN_TEXT_LENGTH) {
+      result.detail = `页面文本不足${EMOJI_MIN_TEXT_LENGTH}字符，跳过Emoji密度检测`;
+      result.detailCN = 'Emoji密度: 文本不足';
       return result;
     }
 
-    const domNodeCount = pageMetrics.domNodeCount || 0;
-    const hasExternal = !!(pageMetrics.hasExternalResources);
-    const totalExternal = pageMetrics.totalExternalResources || 0;
-    const hasFramework = !!(pageMetrics.hasFrameworkMarkers);
+    // 2. 关键词预筛选（大小写不敏感）
+    const lowerText = pageText.toLowerCase();
+    let keywordMatchCount = 0;
+    for (const kw of EMOJI_PROMO_KEYWORDS) {
+      if (lowerText.includes(kw.toLowerCase())) {
+        keywordMatchCount++;
+      }
+    }
+    result.keywordMatchCount = keywordMatchCount;
 
-    // 收集命中的信号（而非简单的 flags 计数）
-    const signals = [];
-
-    // 信号1：DOM节点数过少（页面结构复杂度不足）
-    // 使用 DOM 节点总数替代 HTML 行数，不受代码压缩/格式化影响
-    if (domNodeCount > 0 && domNodeCount < AI_PAGE_THRESHOLDS.MIN_DOM_NODES) {
-      signals.push(`DOM节点仅${domNodeCount}个`);
+    if (keywordMatchCount < EMOJI_KEYWORD_MATCH_THRESHOLD) {
+      result.detail = `推广关键词匹配${keywordMatchCount}个，未达阈值${EMOJI_KEYWORD_MATCH_THRESHOLD}，跳过Emoji密度检测`;
+      result.detailCN = 'Emoji密度: 非推广页面';
+      return result;
     }
 
-    // 信号2：无主流框架痕迹
-    // content-script 已通过 HTML全文扫描 + window全局变量双重检测
-    if (!hasFramework) {
-      signals.push('未检测到主流框架');
+    // 3. Emoji 密度计算
+    // 使用 Unicode 属性转义，覆盖常见 emoji（包括肤色修饰符、零宽连接符序列）
+    const emojiRegex = /\p{Emoji_Presentation}|\p{Emoji}️/gu;
+    const emojiMatches = pageText.match(emojiRegex) || [];
+    const emojiCount = emojiMatches.length;
+    result.emojiCount = emojiCount;
+
+    if (emojiCount === 0) {
+      result.detail = `推广关键词匹配${keywordMatchCount}个，但无Emoji字符`;
+      result.detailCN = 'Emoji密度: 无Emoji';
+      return result;
     }
 
-    // 信号3：外部资源过少
-    // 使用去重后的外部资源总数，合理反映页面是否依赖外部基础设施
-    if (!hasExternal || totalExternal < AI_PAGE_THRESHOLDS.MIN_EXTERNAL_RESOURCES) {
-      signals.push(`外部资源仅${totalExternal}个`);
-    }
+    // density = (emojiCount / pageText.length) * 1000（单位：个/千字符）
+    const density = (emojiCount / pageText.length) * 1000;
+    result.density = Math.round(density * 100) / 100;
 
-    const signalCount = signals.length;
-
-    // 组合判定
-    if (signalCount >= AI_PAGE_THRESHOLDS.RULE_5_SIGNALS_FULL) {
-      // 3/3 信号全中 → 高度可疑（经典钓鱼空壳：结构简单+无框架+无外部资源）
-      result.score = SCORE_RULE_5;  // +30
-      result.triggered = true;
-      result.detail = `代码工程质量差(${signalCount}/3信号): ${signals.join('; ')}`;
-      result.detailCN = `代码工程化: 高度可疑 (${signals.join(', ')})`;
-    } else if (signalCount >= AI_PAGE_THRESHOLDS.RULE_5_SIGNALS_PARTIAL) {
-      // 2/3 信号命中 → 中度可疑
-      result.score = SCORE_RULE_5_PARTIAL;  // +20
-      result.triggered = true;
-      result.detail = `代码工程化弱信号(${signalCount}/3信号): ${signals.join('; ')}`;
-      result.detailCN = `代码工程化: 中度可疑 (${signals.join(', ')})`;
-    } else if (signalCount === 1) {
-      // 1/3 信号 → 证据不足，不扣分（正常简单页面常有单个弱特征）
-      result.detail = `代码工程化基本正常（仅${signals[0]}）`;
-      result.detailCN = '代码工程化: 基本正常';
+    // 4. 分段线性映射
+    let emojiDensityScore = 0;
+    if (density < EMOJI_DENSITY_THRESHOLD_LOW) {
+      emojiDensityScore = 0;
+    } else if (density < EMOJI_DENSITY_THRESHOLD_HIGH) {
+      emojiDensityScore = (density - EMOJI_DENSITY_THRESHOLD_LOW) /
+        (EMOJI_DENSITY_THRESHOLD_HIGH - EMOJI_DENSITY_THRESHOLD_LOW) *
+        EMOJI_DENSITY_MAX_SCORE;
     } else {
-      // 0/3 信号 → 完全正常
-      result.detail = '代码工程化检测通过（DOM节点' + domNodeCount + '，外部资源' + totalExternal + '个）';
-      result.detailCN = '代码工程化: 正常';
+      emojiDensityScore = EMOJI_DENSITY_MAX_SCORE;
+    }
+
+    emojiDensityScore = Math.floor(emojiDensityScore);
+    result.score = emojiDensityScore;
+
+    if (emojiDensityScore > 0) {
+      result.triggered = true;
+      result.detail = `推广页面Emoji密度高（匹配${keywordMatchCount}个关键词，${emojiCount}个Emoji，密度${result.density.toFixed(1)}/千字符），+${emojiDensityScore}`;
+      result.detailCN = `Emoji密度: ${emojiCount}个Emoji，密度${result.density.toFixed(1)}，+${emojiDensityScore}`;
+    } else {
+      result.detail = `推广页面Emoji密度低（匹配${keywordMatchCount}个关键词，${emojiCount}个Emoji，密度${result.density.toFixed(1)}/千字符），不加分`;
+      result.detailCN = `Emoji密度: 密度${result.density.toFixed(1)}，不加分`;
     }
 
     return result;

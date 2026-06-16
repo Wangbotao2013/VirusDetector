@@ -5,7 +5,7 @@
  * 存储键名和缓存策略。所有模块通过 import 共用同一份配置。
  *
  * @module constants
- * @version 2.1.0-alpha.2
+ * @version 2.2.0
  */
 
 // ==================== 评分体系 ====================
@@ -90,6 +90,45 @@ export const AI_PAGE_THRESHOLDS = {
   RULE_5_SIGNALS_FULL: 3,         // 命中3个信号 → 高度可疑 +30
   RULE_5_SIGNALS_PARTIAL: 2       // 命中2个信号 → 中度可疑 +20
 };
+
+// ==================== 规则五子规则：关键词预筛选 + Emoji 密度检测 ====================
+/**
+ * 先通过推广/产品关键词预筛选确定页面是否为推广性质，
+ * 再基于 Emoji 密度进行分段线性加分（上限 30 分）。
+ *
+ * 设计原理：
+ *   - 正常页面 Emoji 密度通常极低
+ *   - 钓鱼/欺诈推广页面常大量使用 Emoji 吸引眼球
+ *   - 关键词预筛避免对非推广页面的误报
+ */
+/** 推广/产品页面关键词（中英文），用于预筛选 */
+export const EMOJI_PROMO_KEYWORDS = [
+  // 中文关键词
+  '下载', '产品', '软件', '安装', '免费', '官方', '应用', '工具',
+  '版本', '最新', '破解', '注册', '激活', '绿色', '汉化', '插件',
+  '专业版', '正式版', '购买', '激活码', '注册机', '补丁', '试用',
+  '客户端', '安装包', '精简版', '去广告', '便携版',
+  // 英文关键词
+  'download', 'product', 'software', 'install', 'free', 'official',
+  'app', 'tool', 'version', 'latest', 'crack', 'register', 'activate',
+  'pro', 'premium', 'setup', 'license', 'keygen', 'patch', 'trial',
+  'portable', 'release', 'full version'
+];
+
+/** 推广关键词匹配度阈值：匹配数量 >= 此值才进入 Emoji 密度检测 */
+export const EMOJI_KEYWORD_MATCH_THRESHOLD = 1;
+
+/** Emoji 密度检测所需的最小文本长度（字符数） */
+export const EMOJI_MIN_TEXT_LENGTH = 100;
+
+/** Emoji 密度得分上限 */
+export const EMOJI_DENSITY_MAX_SCORE = 30;
+
+/** Emoji 密度下阈值（个/千字符），低于此值不加分 */
+export const EMOJI_DENSITY_THRESHOLD_LOW = 2.0;
+
+/** Emoji 密度上阈值（个/千字符），高于此值得满分 */
+export const EMOJI_DENSITY_THRESHOLD_HIGH = 10.0;
 
 // 主流框架标记 — HTML源码字符串匹配用（content-script 使用此列表做全文搜索）
 export const FRAMEWORK_HTML_MARKERS = [

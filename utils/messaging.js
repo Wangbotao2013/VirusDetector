@@ -7,7 +7,7 @@ import { MSG_TYPES } from './constants.js';
  * 提供标准化的消息信封格式和类型安全的收发方法。
  *
  * @module messaging
- * @version 2.1.0-alpha.2
+ * @version 2.2.0
  *
  * 消息信封结构：{ type: string, payload: any, tabId: number, timestamp: number }
  */
