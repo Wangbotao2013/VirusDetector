@@ -142,7 +142,7 @@ export class WhoisClient {
     if (!rdapResult) {
       const errInfo = RdapClient.lastError;
       const errPhase = errInfo ? ` [${errInfo.phase}]` : '';
-      const errMsg = errInfo ? `: ${errInfo.message}` : '';
+      const errMsg = errInfo ? errInfo.message : '';
       _recordError(normalizedDomain, errInfo?.phase || 'connect', errMsg || 'RDAP 查询返回空结果');
       return null;
     }

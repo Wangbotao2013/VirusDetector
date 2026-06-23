@@ -42,10 +42,57 @@ const RDAP_REQUEST_TIMEOUT = 10000;
  * @property {Map<string, string>} tldToServer - TLD → RDAP 基础 URL 映射
  * @property {number}             timestamp    - 缓存时间戳
  * @property {string}             publication  - 引导文件的 publication 时间
+ * @property {boolean}            isFallback   - 是否正在使用硬编码回退映射
  */
 
 /** @type {BootstrapCache|null} */
 let _bootstrapCache = null;
+
+/**
+ * 硬编码的常用 TLD → RDAP 服务器回退映射。
+ * 当 IANA 引导文件无法下载时使用，覆盖最常用的顶级域。
+ * 注意：回退映射可能不是最新版本，仅用作降级方案。
+ */
+const _FALLBACK_RDAP_SERVERS = new Map([
+  ['com', 'https://rdap.verisign.com/com/v1/'],
+  ['net', 'https://rdap.verisign.com/net/v1/'],
+  ['org', 'https://rdap.publicinterestregistry.org/'],
+  ['cn',  'http://rdap.cnnic.net.cn/'],
+  ['uk',  'https://rdap.nominet.uk/uk/'],
+  ['de',  'https://rdap.denic.de/'],
+  ['jp',  'https://rdap.nic.ad.jp/jp/'],
+  ['fr',  'https://rdap.nic.fr/'],
+  ['au',  'https://rdap.auda.org.au/'],
+  ['ru',  'https://rdap.nic.ru/'],
+  ['eu',  'https://rdap.eu/'],
+  ['it',  'https://rdap.nic.it/'],
+  ['nl',  'https://rdap.sidn.nl/'],
+  ['br',  'https://rdap.nic.br/'],
+  ['info','https://rdap.afilias.net/rdap/'],
+  ['biz', 'https://rdap.afilias.net/rdap/'],
+  ['io',  'https://rdap.afilias.net/rdap/'],
+  ['co',  'https://rdap.nic.co/'],
+  ['ai',  'https://rdap.nic.ai/'],
+  ['tv',  'https://rdap.nic.tv/'],
+  ['me',  'https://rdap.nic.me/'],
+  ['xyz', 'https://rdap.nic.xyz/'],
+  ['top', 'https://rdap.nic.top/'],
+  ['site','https://rdap.nic.site/'],
+  ['app', 'https://rdap.nic.app/'],
+  ['dev', 'https://rdap.nic.dev/'],
+  ['blog','https://rdap.nic.blog/'],
+  ['shop','https://rdap.nic.shop/'],
+  ['cc',  'https://rdap.nic.cc/'],
+  ['ws',  'https://rdap.nic.ws/'],
+  ['hk',  'https://rdap.hkirc.hk/'],
+  ['tw',  'https://rdap.twnic.tw/'],
+  ['kr',  'https://rdap.kisa.or.kr/'],
+  ['sg',  'https://rdap.sgnic.sg/'],
+  ['in',  'https://rdap.registry.in/'],
+  ['nz',  'https://rdap.srs.net.nz/'],
+  ['za',  'https://rdap.registry.net.za/'],
+  ['mx',  'https://rdap.nic.mx/'],
+]);
 
 // ==================== 引导文件管理 ====================
 
@@ -86,7 +133,7 @@ async function _fetchBootstrap() {
     throw new Error('引导文件缺少 services 数组');
   }
 
-  // 构建 TLD → RDAP 服务器 URL 映射
+  // 构建 TLD → RDAP 服务器 URL 映射（从 IANA 加载）
   const tldToServer = new Map();
   for (const entry of json.services) {
     if (!Array.isArray(entry) || entry.length < 2) continue;
@@ -102,26 +149,63 @@ async function _fetchBootstrap() {
     }
   }
 
-  console.log(`[RdapClient] 引导文件加载完成: ${tldToServer.size} 个 TLD 映射`);
+  // 用 IANA 数据覆盖回退映射中相同 TLD 的条目。
+  // 回退映射中没有的 TLD 从 IANA 补充。
+  for (const [tld, url] of _FALLBACK_RDAP_SERVERS) {
+    if (!tldToServer.has(tld)) {
+      tldToServer.set(tld, url);
+    }
+  }
+
+  console.log(`[RdapClient] 引导文件加载完成: ${tldToServer.size} 个 TLD 映射 (含 fallback 补充)`);
 
   _bootstrapCache = {
     tldToServer,
     timestamp: Date.now(),
-    publication: json.publication || ''
+    publication: json.publication || '',
+    isFallback: false
   };
 
   return _bootstrapCache;
 }
 
 /**
- * 确保引导文件已加载且缓存有效
+ * 构建纯回退的引导缓存（IANA 下载失败时使用）
+ * @returns {BootstrapCache}
+ */
+function _buildFallbackCache() {
+  const tldToServer = new Map(_FALLBACK_RDAP_SERVERS);
+  console.warn(`[RdapClient] ⚠️ 回退到硬编码 RDAP 映射 (${tldToServer.size} 个 TLD)`);
+
+  _bootstrapCache = {
+    tldToServer,
+    timestamp: Date.now(),
+    publication: '(hardcoded fallback)',
+    isFallback: true
+  };
+
+  return _bootstrapCache;
+}
+
+/**
+ * 确保引导文件已加载且缓存有效。
+ * IANA 下载失败时自动回退到硬编码映射。
  * @returns {Promise<BootstrapCache>}
  */
 async function _ensureBootstrap() {
+  // 已有缓存且在有效期内 → 直接返回
   if (_bootstrapCache && (Date.now() - _bootstrapCache.timestamp) < BOOTSTRAP_CACHE_TTL) {
     return _bootstrapCache;
   }
-  return await _fetchBootstrap();
+
+  // 尝试从 IANA 下载
+  try {
+    return await _fetchBootstrap();
+  } catch (error) {
+    console.error('[RdapClient] IANA 引导文件下载失败:', error.message);
+    // 回退到硬编码映射
+    return _buildFallbackCache();
+  }
 }
 
 /**
@@ -134,22 +218,20 @@ function _clearBootstrapCache() {
 /**
  * 从引导文件中查找域名对应的 RDAP 基础 URL
  * @param {string} domain - 完整域名（如 "baidu.com"）
- * @returns {Promise<string|null>} RDAP 基础 URL，未找到返回 null
+ * @returns {Promise<{baseUrl: string|null, isFallback: boolean}>}
+ *   baseUrl: RDAP 基础 URL，未找到返回 null
+ *   isFallback: 是否正在使用回退映射
  */
 async function _getRdapBaseUrl(domain) {
-  try {
-    const bootstrap = await _ensureBootstrap();
+  const bootstrap = await _ensureBootstrap();
 
-    // 提取 TLD（域名的最后一段）
-    const parts = domain.toLowerCase().split('.');
-    if (parts.length < 2) return null;
-    const tld = parts[parts.length - 1];
+  // 提取 TLD（域名的最后一段）
+  const parts = domain.toLowerCase().split('.');
+  if (parts.length < 2) return { baseUrl: null, isFallback: false };
+  const tld = parts[parts.length - 1];
 
-    return bootstrap.tldToServer.get(tld) || null;
-  } catch (error) {
-    console.error('[RdapClient] 获取 RDAP 服务器 URL 失败:', error.message);
-    return null;
-  }
+  const baseUrl = bootstrap.tldToServer.get(tld) || null;
+  return { baseUrl, isFallback: bootstrap.isFallback || false };
 }
 
 // ==================== RDAP 响应解析 ====================
@@ -362,7 +444,7 @@ export class RdapClient {
     const normalizedDomain = domain.toLowerCase().trim();
 
     // Step 1: 获取引导文件，查找 RDAP 服务器 URL
-    const baseUrl = await _getRdapBaseUrl(normalizedDomain);
+    const { baseUrl, isFallback } = await _getRdapBaseUrl(normalizedDomain);
     if (!baseUrl) {
       _lastError = {
         domain: normalizedDomain,
@@ -371,6 +453,10 @@ export class RdapClient {
       };
       console.warn(`[RdapClient] ${_lastError.message}: ${normalizedDomain}`);
       return null;
+    }
+
+    if (isFallback) {
+      console.log(`[RdapClient] 使用回退映射查询: ${normalizedDomain} (TLD: ${normalizedDomain.split('.').pop()})`);
     }
 
     // Step 2: 构造 RDAP 查询 URL
