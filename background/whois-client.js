@@ -25,11 +25,11 @@
  *   - 数据来源于注册局官方 RDAP 服务，更准确可靠
  *   - 支持所有 TLD（只要 IANA 引导文件中有对应条目）
  *   - 使用 HTTPS（旧版 WhoisCX 仅支持 HTTP）
+ *   - 域名标准化由 RDAP 服务端处理（ldhName 返回规范域名）
  */
 
 import { WHOIS_CACHE_TTL } from '../utils/constants.js';
 import { RdapClient } from './rdap-client.js';
-import { UrlUtils } from '../utils/url-utils.js';
 
 // ==================== 内存缓存 ====================
 
@@ -114,17 +114,12 @@ export class WhoisClient {
       return null;
     }
 
-    // 2. 规范化域名：基于 PSL 提取可注册域名
-    const rawDomain = domain.toLowerCase().trim();
-    const normalizedDomain = UrlUtils.getMainDomain(rawDomain);
+    // 2. 规范化域名：域名标准化由 RDAP 服务端处理（ldhName 返回规范域名）
+    const normalizedDomain = domain.toLowerCase().trim();
 
     if (!normalizedDomain || !normalizedDomain.includes('.')) {
       _recordError(normalizedDomain || domain, 'invalid', '域名格式无效', { domain });
       return null;
-    }
-
-    if (normalizedDomain !== rawDomain) {
-      console.log(`[WhoisClient] PSL 域名提取: ${rawDomain} -> ${normalizedDomain}`);
     }
 
     // 3. 检查缓存
@@ -214,7 +209,7 @@ export class WhoisClient {
    */
   static getCached(domain) {
     if (!domain) return null;
-    const normalizedDomain = UrlUtils.getMainDomain(domain.toLowerCase().trim());
+    const normalizedDomain = domain.toLowerCase().trim();
     const cached = _cache.get(normalizedDomain);
     if (cached && (Date.now() - cached.timestamp) < WHOIS_CACHE_TTL) {
       return cached.result;
@@ -243,7 +238,7 @@ export class WhoisClient {
    */
   static clearCache(domain) {
     if (domain) {
-      _cache.delete(UrlUtils.getMainDomain(domain.toLowerCase().trim()));
+      _cache.delete(domain.toLowerCase().trim());
     }
   }
 

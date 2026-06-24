@@ -3,7 +3,7 @@
 > Chrome/Edge 浏览器扩展，实时检测银狐木马（Silver Fox Trojan）钓鱼与仿冒网站。
 
 [![Manifest](https://img.shields.io/badge/Manifest-V3-blue)](https://developer.chrome.com/docs/extensions/mv3/)
-[![Version](https://img.shields.io/badge/Version-2.2.2-orange)](https://github.com)
+[![Version](https://img.shields.io/badge/Version-2.2.3-orange)](https://github.com)
 
 ---
 
@@ -64,7 +64,7 @@ VirusDetector/
 │   ├── scoring-engine.js              # 多规则评分引擎 —— 综合评估与风险定级
 │   ├── domain-database.js             # 121 品牌域名数据库 + 仿冒检测（5 层匹配）
 │   ├── rdap-client.js                 # RDAP 注册信息查询客户端（IANA 引导文件 + 注册局 RDAP + rdap.ss 备用代理）
-│   ├── whois-client.js                # RDAP 协议封装层（PSL 域名提取 + 缓存 + 错误归一化）
+│   ├── whois-client.js                # RDAP 协议封装层（缓存 + 错误归一化，域名标准化由 RDAP 服务端处理）
 │   ├── cache-manager.js               # chrome.storage.local 缓存管理（24h TTL）
 │   ├── similarity.js                  # SimHash 64 位文本相似度 + 海明距离
 │   └── icp-utils.js                   # ICP 备案号正则匹配（覆盖 34 个省级行政区简称）
@@ -80,7 +80,7 @@ VirusDetector/
 │   └── warning.js                     # 警告窗口控制 —— 关闭危险页面、跳转安全页面
 └── utils/
     ├── constants.js                   # 评分常量、可疑 TLD 模式、下载关键词、阈值配置
-    ├── url-utils.js                   # 域名解析、PSL 主域提取、DoH DNS 查询
+    ├── url-utils.js                   # URL 解析工具（域名提取、HTTPS 检测等）
     ├── messaging.js                   # chrome.runtime 消息通信封装
     └── trusted-platforms.js          # 可信平台白名单 —— UGC 平台跳过仿冒检测
 ```

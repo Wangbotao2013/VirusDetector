@@ -2,15 +2,15 @@
  * Virus Detector — 可信平台白名单 (Trusted Platforms Whitelist)
  *
  * 用于避免将合法 Wiki、代码托管、博客、文档等 UGC 平台的子页面
- * 误判为仿冒官网。匹配逻辑：提取 URL 的注册域（eTLD+1），
- * 与白名单进行 O(1) 查找比对。
+ * 误判为仿冒官网。匹配逻辑：通过域名后缀匹配（hostname 等于或
+ * 以 .trustedPlatform 结尾），与白名单进行比对。
  *
  * @module trusted-platforms
- * @version 2.2.2
+ * @version 2.2.3
  *
  * 设计原则：
  *   - 白名单为可配置、可扩展的 Set，新增/移除平台只需修改数组
- *   - 匹配粒度是 eTLD+1（注册域），匹配后该域下所有子页面均受信任
+ *   - 匹配粒度是注册域层级，匹配后该域下所有子页面均受信任
  *   - 仅跳过仿冒官网检测（规则一），其他安全规则仍正常运行
  *
  * 覆盖类别：
@@ -86,16 +86,23 @@ const TRUSTED_PLATFORMS = new Set([
 
 export class TrustedPlatforms {
   /**
-   * 检查给定注册域（eTLD+1）是否在可信平台白名单中。
+   * 检查给定主机名是否属于可信平台白名单。
    *
-   * 调用方应先通过 UrlUtils.getMainDomain() 提取注册域再传入。
+   * 通过后缀匹配判断：hostname 等于可信平台域名，或以 ".可信平台域名" 结尾。
+   * 例如 minecraft.fandom.com 匹配 fandom.com，github.io 匹配 github.io。
    *
-   * @param {string} mainDomain - eTLD+1 格式的注册域，如 "fandom.com"、"github.io"
+   * @param {string} hostname - 完整主机名，如 "minecraft.fandom.com"、"example.github.io"
    * @returns {boolean} 是否命中白名单
    */
-  static isTrusted(mainDomain) {
-    if (!mainDomain) return false;
-    return TRUSTED_PLATFORMS.has(mainDomain.toLowerCase());
+  static isTrusted(hostname) {
+    if (!hostname) return false;
+    const lower = hostname.toLowerCase();
+    for (const platform of TRUSTED_PLATFORMS) {
+      if (lower === platform || lower.endsWith('.' + platform)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   /**

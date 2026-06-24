@@ -4,7 +4,7 @@
  * 实现多规则评分体系，总分 >= 100 分时判定为危险网站。
  *
  * @module scoring-engine
- * @version 2.2.2
+ * @version 2.2.3
  *
  * 评分规则：
  *   规则一 域名仿冒         → 60 分 | 5 层递进：子串包含 → 段级关键词 → 可疑TLD → 关键词堆叠 → 编辑距离
@@ -29,7 +29,6 @@
 import { DomainDatabase } from './domain-database.js';
 import { IcpUtils } from './icp-utils.js';
 import { WhoisClient } from './whois-client.js';
-import { UrlUtils } from '../utils/url-utils.js';
 import { TrustedPlatforms } from '../utils/trusted-platforms.js';
 import {
   SCORE_THRESHOLD, SCORE_RULE_1, SCORE_RULE_2_HIGH, SCORE_RULE_2_LOW,
@@ -137,13 +136,12 @@ export class ScoringEngine {
     };
 
     // ---- 可信平台白名单前置检查 ----
-    // 提取注册域（eTLD+1），若命中白名单则完全跳过仿冒检测。
+    // 通过域名后缀匹配，若命中白名单则完全跳过仿冒检测。
     // 这些平台的子页面（如 minecraft.fandom.com）属于用户生成内容，
     // 不应因 URL 中包含品牌关键词而被误判为仿冒官网。
-    const mainDomain = UrlUtils.getMainDomain(domain);
-    if (TrustedPlatforms.isTrusted(mainDomain)) {
-      result.detail = `可信平台（${mainDomain}），跳过域名仿冒检测`;
-      result.detailCN = `域名: 可信平台（${mainDomain}）`;
+    if (TrustedPlatforms.isTrusted(domain)) {
+      result.detail = `可信平台（${domain}），跳过域名仿冒检测`;
+      result.detailCN = `域名: 可信平台（${domain}）`;
       return result;
     }
 
@@ -715,16 +713,16 @@ export class ScoringEngine {
     return result;
   }
 
-  // ==================== 下载链接跨域检测（Whois API） ====================
+  // ==================== 下载链接跨域检测（RDAP 域名标准化） ====================
   /**
    * 检测下载链接的域名是否与当前页面跨域，以及下载链接域名是否为新注册。
    * 由 Service Worker 的下载事件处理程序调用。
    *
    * 判定逻辑：
-   *   1. 从下载 URL 提取域名，与当前页面域名比较主域名
-   *   2. 同主域名 → 不加分（0 分）
+   *   1. 从下载 URL 提取域名，通过 RDAP 查询获取规范域名（ldhName）进行比较
+   *   2. 同规范域名 → 不加分（0 分）
    *   3. 跨域 → +10 分（SCORE_DOWNLOAD_CROSS_DOMAIN）
-   *   4. 跨域 且 Whois API 返回 valid_days < 365 且 creation_days < 90 → 再 +10 分
+   *   4. 跨域 且 RDAP 返回 valid_days < 365 且 creation_days < 90 → 再 +10 分
    *
    * @param {string} downloadUrl - 下载文件的完整 URL
    * @param {string} pageDomain   - 当前页面的域名
@@ -754,12 +752,18 @@ export class ScoringEngine {
 
     result.downloadDomain = downloadDomain;
 
-    // 提取主域名（去掉子域名）进行比较
-    const pageMainDomain = UrlUtils.getMainDomain(pageDomain);
-    const downloadMainDomain = UrlUtils.getMainDomain(downloadDomain);
+    // 查询下载链接域名的 RDAP 信息（规范域名、注册时间）
+    const whoisResult = await WhoisClient.lookup(downloadDomain);
+    result.whoisResult = whoisResult;
 
-    // 同主域名 → 不跨域，不加分
-    if (pageMainDomain === downloadMainDomain) {
+    // 通过 RDAP 返回的规范域名（ldhName）判断是否跨域
+    // RDAP 服务器的响应中 domain 字段即为规范域名（如 baidu.com）
+    const downloadCanonical = whoisResult?.domain || downloadDomain;
+    const pageWhoisCached = WhoisClient.getCached(pageDomain);
+    const pageCanonical = pageWhoisCached?.domain || pageDomain;
+
+    // 同规范域名 → 不跨域，不加分
+    if (pageCanonical && downloadCanonical && pageCanonical === downloadCanonical) {
       result.detail = `下载链接同域 (${downloadDomain})，不加分`;
       result.detailCN = `下载链接: 同域 (${downloadDomain})`;
       return result;
@@ -770,10 +774,6 @@ export class ScoringEngine {
     result.triggered = true;
     result.detail = `下载链接跨域 (${downloadDomain} ≠ ${pageDomain})，+10`;
     result.detailCN = `下载链接: 跨域下载 (${downloadDomain}) +10`;
-
-    // 查询下载链接域名的 Whois 信息，检查是否为新注册域名
-    const whoisResult = await WhoisClient.lookup(downloadDomain);
-    result.whoisResult = whoisResult;
 
     if (whoisResult && whoisResult.creationDays >= 0 && whoisResult.validDays >= 0) {
       // 条件：valid_days < 365 且 creation_days < 90 → 新注册域名额外加分
